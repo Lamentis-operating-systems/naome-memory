@@ -33,6 +33,10 @@ use naome_memory_sqlite::{CohortKey, MAX_ATOM_INSERT_BATCH, SqliteRepository, St
 const PROOF_DIR: &str = "target/proofs";
 const SCALE_RECEIPT_FILE: &str = "scale-receipt.json";
 const SCALE_CORE_RECEIPT_FILE: &str = "scale-core-retirement-receipt.json";
+const MUTATION_RECEIPT_FILE: &str = "mutation-receipt.json";
+const MUTATION_LOG_STEM: &str = "mutation-naome-memory-core";
+const MUTATION_OUTPUT_DIR: &str = "mutation-tool";
+const FUZZ_RECEIPT_FILE: &str = "fuzz-receipt.json";
 const DEEP_SCALE_ATOM_COUNT: usize = 100_000;
 const SCALE_MAX_WALL_MILLIS: u64 = 1_800_000;
 const SCALE_MAX_RSS_BYTES: u64 = 6 * 1024 * 1024 * 1024;
@@ -40,6 +44,12 @@ const SCALE_MAX_DISK_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const MUTATION_TOOL_VERSION: &str = "27.1.0";
 const FUZZ_TOOL_VERSION: &str = "0.13.2";
 const FUZZ_NIGHTLY: &str = "nightly-2026-07-01";
+const FUZZ_TARGETS: [(&str, &str); 4] = [
+    ("decoder", "fuzz-decoder"),
+    ("canonical", "fuzz-canonical"),
+    ("receipt_verifier", "fuzz-receipt-verifier"),
+    ("sqlite_ingest", "fuzz-sqlite-ingest"),
+];
 const TOOL_RECEIPT_HASH_DOMAIN: &[u8] = b"naome-memory:tool-receipt:v1\0";
 const MICROSECONDS_PER_DAY: u64 = 86_400_000_000;
 
@@ -503,17 +513,12 @@ fn scale_with_output(atoms: usize, proof_directory: &Path) -> Result<()> {
     let observed_max_rss_bytes = rss_sampler.finish();
     let observed_wall_millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let source_commit_at_publication = current_clean_source_commit();
-    let source_binding_complete = scale_source_binding_complete(
+    let source_commit = bound_clean_source_commit(
         source_commit_at_start.as_deref(),
         source_commit_at_publication.as_deref(),
     );
-    let source_commit = if source_binding_complete {
-        source_commit_at_start
-            .clone()
-            .unwrap_or_else(|| "uncommitted".to_owned())
-    } else {
-        "uncommitted".to_owned()
-    };
+    let source_binding_complete = source_commit.is_some();
+    let source_commit = source_commit.unwrap_or_else(|| "uncommitted".to_owned());
     logical.sizes.sort_unstable();
     let p50 = percentile(&logical.sizes, 50)?;
     let p95 = percentile(&logical.sizes, 95)?;
@@ -776,36 +781,31 @@ fn persist_scale_batch(
 fn mutation() -> Result<()> {
     let proof_dir = workspace_root().join(PROOF_DIR);
     fs::create_dir_all(&proof_dir)?;
-    let source_commit = current_source_commit().unwrap_or_else(|_| "uncommitted".to_owned());
+    clear_mutation_evidence(&proof_dir)?;
+    let source_commit_at_start = current_clean_source_commit();
     let toolchain = "1.95.0";
     let tool_version = observed_cargo_subcommand_version(toolchain, "mutants")
         .unwrap_or_else(|_| "unavailable".to_owned());
-    let command = vec![
-        "cargo".to_owned(),
-        format!("+{toolchain}"),
-        "mutants".to_owned(),
-        "--package".to_owned(),
-        "naome-memory-core".to_owned(),
-        "--timeout".to_owned(),
-        "120".to_owned(),
-    ];
+    let command = mutation_target_command(toolchain);
     let target = capture_tool_target(
         &proof_dir,
-        "mutation-naome-memory-core",
+        MUTATION_LOG_STEM,
         "naome-memory-core",
         command,
         None,
     )?;
-    let evidence_status = if target.exit_code == Some(0)
-        && tool_version.contains(MUTATION_TOOL_VERSION)
-        && valid_git_commit(&source_commit)
-    {
-        EvidenceStatusV1::Passed
-    } else if target.exit_code.is_some() {
-        EvidenceStatusV1::Failed
-    } else {
-        EvidenceStatusV1::Inconclusive
-    };
+    let source_commit_at_publication = current_clean_source_commit();
+    let source_commit = bound_clean_source_commit(
+        source_commit_at_start.as_deref(),
+        source_commit_at_publication.as_deref(),
+    );
+    let evidence_status = classify_tool_evidence(
+        std::slice::from_ref(&target),
+        1,
+        tool_version.contains(MUTATION_TOOL_VERSION),
+        source_commit.is_some(),
+    );
+    let source_commit = source_commit.unwrap_or_else(|| "uncommitted".to_owned());
     let mut receipt = ToolReceiptV1 {
         contract_version: "mutation-receipt-v1".to_owned(),
         tool: "cargo-mutants".to_owned(),
@@ -818,7 +818,7 @@ fn mutation() -> Result<()> {
         receipt_digest: String::new(),
     };
     receipt.receipt_digest = receipt.recompute_digest()?;
-    let output = proof_dir.join("mutation-receipt.json");
+    let output = proof_dir.join(MUTATION_RECEIPT_FILE);
     write_json(&output, &receipt)?;
     println!("{}", serde_json::to_string(&receipt)?);
     ensure!(
@@ -828,48 +828,54 @@ fn mutation() -> Result<()> {
     Ok(())
 }
 
+fn mutation_target_command(toolchain: &str) -> Vec<String> {
+    vec![
+        "cargo".to_owned(),
+        format!("+{toolchain}"),
+        "mutants".to_owned(),
+        "--package".to_owned(),
+        "naome-memory-core".to_owned(),
+        "--timeout".to_owned(),
+        "120".to_owned(),
+        "--output".to_owned(),
+        format!("{PROOF_DIR}/{MUTATION_OUTPUT_DIR}"),
+    ]
+}
+
 fn fuzz(seconds: u64) -> Result<()> {
     ensure!(seconds > 0, "fuzz duration must be greater than zero");
-    let target_names = ["decoder", "canonical", "receipt_verifier", "sqlite_ingest"];
     let fuzz_manifest = workspace_root().join("fuzz/Cargo.toml");
     let proof_dir = workspace_root().join(PROOF_DIR);
     fs::create_dir_all(&proof_dir)?;
-    let source_commit = current_source_commit().unwrap_or_else(|_| "uncommitted".to_owned());
+    clear_fuzz_evidence(&proof_dir)?;
+    let source_commit_at_start = current_clean_source_commit();
     let tool_version = observed_cargo_subcommand_version(FUZZ_NIGHTLY, "fuzz")
         .unwrap_or_else(|_| "unavailable".to_owned());
-    let mut targets = Vec::with_capacity(target_names.len());
+    let mut targets = Vec::with_capacity(FUZZ_TARGETS.len());
     if fuzz_manifest.is_file() {
-        for target in target_names {
-            let command = vec![
-                "cargo".to_owned(),
-                format!("+{FUZZ_NIGHTLY}"),
-                "fuzz".to_owned(),
-                "run".to_owned(),
-                target.to_owned(),
-                "--locked".to_owned(),
-                "--".to_owned(),
-                format!("-max_total_time={seconds}"),
-            ];
+        for (target, log_stem) in FUZZ_TARGETS {
+            let command = fuzz_target_command(target, seconds);
             targets.push(capture_tool_target(
                 &proof_dir,
-                &format!("fuzz-{target}"),
+                log_stem,
                 target,
                 command,
                 Some(seconds),
             )?);
         }
     }
-    let all_passed = targets.len() == target_names.len()
-        && targets.iter().all(|target| target.exit_code == Some(0))
-        && tool_version.contains(FUZZ_TOOL_VERSION)
-        && valid_git_commit(&source_commit);
-    let status = if all_passed {
-        EvidenceStatusV1::Passed
-    } else if targets.iter().any(|target| target.exit_code.is_some()) {
-        EvidenceStatusV1::Failed
-    } else {
-        EvidenceStatusV1::Inconclusive
-    };
+    let source_commit_at_publication = current_clean_source_commit();
+    let source_commit = bound_clean_source_commit(
+        source_commit_at_start.as_deref(),
+        source_commit_at_publication.as_deref(),
+    );
+    let status = classify_tool_evidence(
+        &targets,
+        FUZZ_TARGETS.len(),
+        tool_version.contains(FUZZ_TOOL_VERSION),
+        source_commit.is_some(),
+    );
+    let source_commit = source_commit.unwrap_or_else(|| "uncommitted".to_owned());
     let mut receipt = ToolReceiptV1 {
         contract_version: "fuzz-receipt-v1".to_owned(),
         tool: "cargo-fuzz/libFuzzer".to_owned(),
@@ -882,14 +888,96 @@ fn fuzz(seconds: u64) -> Result<()> {
         receipt_digest: String::new(),
     };
     receipt.receipt_digest = receipt.recompute_digest()?;
-    let output = proof_dir.join("fuzz-receipt.json");
+    let output = proof_dir.join(FUZZ_RECEIPT_FILE);
     write_json(&output, &receipt)?;
     println!("{}", serde_json::to_string(&receipt)?);
     ensure!(
         status == EvidenceStatusV1::Passed,
-        "fuzz campaign is inconclusive"
+        "fuzz campaign did not pass"
     );
     Ok(())
+}
+
+fn clear_mutation_evidence(proof_dir: &Path) -> Result<()> {
+    let logs = proof_dir.join("tool-logs");
+    for path in [
+        proof_dir.join(MUTATION_RECEIPT_FILE),
+        logs.join(format!("{MUTATION_LOG_STEM}.stdout.log")),
+        logs.join(format!("{MUTATION_LOG_STEM}.stderr.log")),
+    ] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("could not remove stale {}", path.display()));
+            }
+        }
+    }
+    let output = proof_dir.join(MUTATION_OUTPUT_DIR);
+    match fs::remove_dir_all(&output) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("could not remove stale {}", output.display()));
+        }
+    }
+    Ok(())
+}
+
+fn fuzz_target_command(target: &str, seconds: u64) -> Vec<String> {
+    vec![
+        "cargo".to_owned(),
+        format!("+{FUZZ_NIGHTLY}"),
+        "fuzz".to_owned(),
+        "run".to_owned(),
+        target.to_owned(),
+        "--".to_owned(),
+        format!("-max_total_time={seconds}"),
+    ]
+}
+
+fn clear_fuzz_evidence(proof_dir: &Path) -> Result<()> {
+    let mut paths = vec![proof_dir.join(FUZZ_RECEIPT_FILE)];
+    let logs = proof_dir.join("tool-logs");
+    for (_, log_stem) in FUZZ_TARGETS {
+        paths.push(logs.join(format!("{log_stem}.stdout.log")));
+        paths.push(logs.join(format!("{log_stem}.stderr.log")));
+    }
+    for path in paths {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("could not remove stale {}", path.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn classify_tool_evidence(
+    targets: &[ToolTargetEvidenceV1],
+    expected_target_count: usize,
+    supported_tool_version: bool,
+    source_binding_complete: bool,
+) -> EvidenceStatusV1 {
+    if targets
+        .iter()
+        .any(|target| target.exit_code.is_some_and(|code| code != 0))
+    {
+        return EvidenceStatusV1::Failed;
+    }
+    if targets.len() == expected_target_count
+        && targets.iter().all(|target| target.exit_code == Some(0))
+        && supported_tool_version
+        && source_binding_complete
+    {
+        return EvidenceStatusV1::Passed;
+    }
+    EvidenceStatusV1::Inconclusive
 }
 
 impl ToolReceiptV1 {
@@ -988,12 +1076,13 @@ fn current_clean_source_commit() -> Option<String> {
     (status.status.success() && status.stdout.is_empty()).then_some(commit)
 }
 
-fn scale_source_binding_complete(start: Option<&str>, publication: Option<&str>) -> bool {
-    matches!(
-        (start, publication),
-        (Some(start), Some(publication))
-            if start == publication && valid_git_commit(start)
-    )
+fn bound_clean_source_commit(start: Option<&str>, publication: Option<&str>) -> Option<String> {
+    match (start, publication) {
+        (Some(start), Some(publication)) if start == publication && valid_git_commit(start) => {
+            Some(start.to_owned())
+        }
+        _ => None,
+    }
 }
 
 fn valid_git_commit(value: &str) -> bool {
@@ -1078,6 +1167,8 @@ fn verify_mutation_receipt(
         "naome-memory-core".to_owned(),
         "--timeout".to_owned(),
         "120".to_owned(),
+        "--output".to_owned(),
+        "target/proofs/mutation-tool".to_owned(),
     ];
     ensure!(
         receipt.targets.len() == 1
@@ -1106,25 +1197,29 @@ fn verify_fuzz_receipt(
         FUZZ_NIGHTLY,
         expected_commit,
     )?;
-    let expected_targets = ["decoder", "canonical", "receipt_verifier", "sqlite_ingest"];
+    let expected_targets = [
+        ("decoder", "fuzz-decoder"),
+        ("canonical", "fuzz-canonical"),
+        ("receipt_verifier", "fuzz-receipt-verifier"),
+        ("sqlite_ingest", "fuzz-sqlite-ingest"),
+    ];
     ensure!(
         receipt.targets.len() == expected_targets.len(),
         "fuzz receipt target count differs from the release gate"
     );
-    for (target, expected) in receipt.targets.iter().zip(expected_targets) {
+    for (target, (expected, expected_log_stem)) in receipt.targets.iter().zip(expected_targets) {
         let expected_command = vec![
             "cargo".to_owned(),
             format!("+{FUZZ_NIGHTLY}"),
             "fuzz".to_owned(),
             "run".to_owned(),
             expected.to_owned(),
-            "--locked".to_owned(),
             "--".to_owned(),
             "-max_total_time=120".to_owned(),
         ];
         ensure!(
             target.target == expected
-                && target.log_stem == format!("fuzz-{expected}")
+                && target.log_stem == expected_log_stem
                 && target.requested_duration_seconds == Some(120)
                 && target.command == expected_command,
             "fuzz receipt target or command differs from the release gate"
@@ -1559,34 +1654,38 @@ fn directory_bytes(path: &Path) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEEP_SCALE_ATOM_COUNT, EvidenceStatusV1, SCALE_CORE_RECEIPT_FILE, SCALE_MAX_DISK_BYTES,
-        SCALE_MAX_RSS_BYTES, SCALE_MAX_WALL_MILLIS, SCALE_RECEIPT_FILE, ScaleReceiptV1,
-        ToolReceiptV1, ToolTargetEvidenceV1, classify_scale_evidence, clear_scale_evidence,
-        publish_and_verify_scale_evidence, read_json, recompute_scale_logical_digest,
-        scale_source_binding_complete, scale_with_output, sha256_hex, verify_mutation_receipt,
-        verify_scale_receipt, verify_scale_receipt_structure,
+        DEEP_SCALE_ATOM_COUNT, EvidenceStatusV1, FUZZ_NIGHTLY, FUZZ_RECEIPT_FILE, FUZZ_TARGETS,
+        MUTATION_LOG_STEM, MUTATION_OUTPUT_DIR, MUTATION_RECEIPT_FILE, SCALE_CORE_RECEIPT_FILE,
+        SCALE_MAX_DISK_BYTES, SCALE_MAX_RSS_BYTES, SCALE_MAX_WALL_MILLIS, SCALE_RECEIPT_FILE,
+        ScaleReceiptV1, ToolReceiptV1, ToolTargetEvidenceV1, bound_clean_source_commit,
+        classify_scale_evidence, classify_tool_evidence, clear_fuzz_evidence,
+        clear_mutation_evidence, clear_scale_evidence, fuzz_target_command,
+        mutation_target_command, publish_and_verify_scale_evidence, read_json,
+        recompute_scale_logical_digest, safe_log_stem, scale_with_output, sha256_hex,
+        verify_fuzz_receipt, verify_mutation_receipt, verify_scale_receipt,
+        verify_scale_receipt_structure,
     };
     use anyhow::Context as _;
     use naome_memory_core::{Digest32, OverallProofStatusV1, ProofReceiptV1};
 
     #[test]
-    fn scale_source_binding_requires_the_same_clean_full_commit() {
+    fn source_binding_requires_the_same_clean_full_commit() {
         let first = "a".repeat(40);
         let second = "b".repeat(40);
-        assert!(scale_source_binding_complete(
-            Some(first.as_str()),
-            Some(first.as_str())
-        ));
-        assert!(!scale_source_binding_complete(
-            Some(first.as_str()),
-            Some(second.as_str())
-        ));
-        assert!(!scale_source_binding_complete(Some(first.as_str()), None));
-        assert!(!scale_source_binding_complete(None, Some(first.as_str())));
-        assert!(!scale_source_binding_complete(
-            Some("uncommitted"),
-            Some("uncommitted")
-        ));
+        assert_eq!(
+            bound_clean_source_commit(Some(first.as_str()), Some(first.as_str())),
+            Some(first.clone())
+        );
+        assert_eq!(
+            bound_clean_source_commit(Some(first.as_str()), Some(second.as_str())),
+            None
+        );
+        assert_eq!(bound_clean_source_commit(Some(first.as_str()), None), None);
+        assert_eq!(bound_clean_source_commit(None, Some(first.as_str())), None);
+        assert_eq!(
+            bound_clean_source_commit(Some("uncommitted"), Some("uncommitted")),
+            None
+        );
     }
 
     #[test]
@@ -1866,6 +1965,188 @@ mod tests {
     }
 
     #[test]
+    fn fuzz_commands_and_log_stems_match_the_pinned_cli_contract() {
+        for (target, log_stem) in FUZZ_TARGETS {
+            assert_eq!(
+                fuzz_target_command(target, 120),
+                vec![
+                    "cargo".to_owned(),
+                    format!("+{FUZZ_NIGHTLY}"),
+                    "fuzz".to_owned(),
+                    "run".to_owned(),
+                    target.to_owned(),
+                    "--".to_owned(),
+                    "-max_total_time=120".to_owned(),
+                ]
+            );
+            assert!(safe_log_stem(log_stem));
+        }
+        for unsafe_stem in ["", ".", "../fuzz", "fuzz/log", "fuzz_receipt"] {
+            assert!(!safe_log_stem(unsafe_stem));
+        }
+    }
+
+    #[test]
+    fn tool_evidence_distinguishes_execution_failure_from_missing_closure() {
+        let mut target = ToolTargetEvidenceV1 {
+            target: "target".to_owned(),
+            command: vec!["tool".to_owned()],
+            requested_duration_seconds: None,
+            observed_duration_millis: 1,
+            exit_code: Some(0),
+            log_stem: "tool-target".to_owned(),
+            stdout_digest: sha256_hex(&[]),
+            stderr_digest: sha256_hex(&[]),
+        };
+        assert_eq!(
+            classify_tool_evidence(std::slice::from_ref(&target), 1, true, true),
+            EvidenceStatusV1::Passed
+        );
+        assert_eq!(
+            classify_tool_evidence(std::slice::from_ref(&target), 1, false, true),
+            EvidenceStatusV1::Inconclusive
+        );
+        assert_eq!(
+            classify_tool_evidence(std::slice::from_ref(&target), 1, true, false),
+            EvidenceStatusV1::Inconclusive
+        );
+        assert_eq!(
+            classify_tool_evidence(&[], 1, true, true),
+            EvidenceStatusV1::Inconclusive
+        );
+        target.exit_code = None;
+        assert_eq!(
+            classify_tool_evidence(std::slice::from_ref(&target), 1, true, true),
+            EvidenceStatusV1::Inconclusive
+        );
+        target.exit_code = Some(2);
+        assert_eq!(
+            classify_tool_evidence(std::slice::from_ref(&target), 1, false, false),
+            EvidenceStatusV1::Failed
+        );
+    }
+
+    #[test]
+    fn mutation_command_routes_tool_output_under_ignored_proof_storage() {
+        assert_eq!(
+            mutation_target_command("1.95.0"),
+            vec![
+                "cargo".to_owned(),
+                "+1.95.0".to_owned(),
+                "mutants".to_owned(),
+                "--package".to_owned(),
+                "naome-memory-core".to_owned(),
+                "--timeout".to_owned(),
+                "120".to_owned(),
+                "--output".to_owned(),
+                "target/proofs/mutation-tool".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn clearing_mutation_evidence_removes_receipt_logs_and_tool_output() -> anyhow::Result<()> {
+        let output = tempfile::tempdir()?;
+        let logs = output.path().join("tool-logs");
+        let tool_output = output.path().join(MUTATION_OUTPUT_DIR).join("mutants.out");
+        std::fs::create_dir_all(&logs)?;
+        std::fs::create_dir_all(&tool_output)?;
+        std::fs::write(output.path().join(MUTATION_RECEIPT_FILE), b"stale receipt")?;
+        std::fs::write(
+            logs.join(format!("{MUTATION_LOG_STEM}.stdout.log")),
+            b"stale",
+        )?;
+        std::fs::write(
+            logs.join(format!("{MUTATION_LOG_STEM}.stderr.log")),
+            b"stale",
+        )?;
+        std::fs::write(tool_output.join("outcomes.json"), b"stale")?;
+
+        clear_mutation_evidence(output.path())?;
+        assert!(!output.path().join(MUTATION_RECEIPT_FILE).exists());
+        assert!(
+            !logs
+                .join(format!("{MUTATION_LOG_STEM}.stdout.log"))
+                .exists()
+        );
+        assert!(
+            !logs
+                .join(format!("{MUTATION_LOG_STEM}.stderr.log"))
+                .exists()
+        );
+        assert!(!output.path().join(MUTATION_OUTPUT_DIR).exists());
+        clear_mutation_evidence(output.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn clearing_fuzz_evidence_removes_receipt_and_all_bound_logs() -> anyhow::Result<()> {
+        let output = tempfile::tempdir()?;
+        let logs = output.path().join("tool-logs");
+        std::fs::create_dir_all(&logs)?;
+        std::fs::write(output.path().join(FUZZ_RECEIPT_FILE), b"stale receipt")?;
+        for (_, log_stem) in FUZZ_TARGETS {
+            std::fs::write(logs.join(format!("{log_stem}.stdout.log")), b"stale")?;
+            std::fs::write(logs.join(format!("{log_stem}.stderr.log")), b"stale")?;
+        }
+
+        clear_fuzz_evidence(output.path())?;
+        assert!(!output.path().join(FUZZ_RECEIPT_FILE).exists());
+        for (_, log_stem) in FUZZ_TARGETS {
+            assert!(!logs.join(format!("{log_stem}.stdout.log")).exists());
+            assert!(!logs.join(format!("{log_stem}.stderr.log")).exists());
+        }
+        clear_fuzz_evidence(output.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn fuzz_receipt_binds_the_exact_supported_command_and_all_logs() -> anyhow::Result<()> {
+        let proof_dir = tempfile::tempdir()?;
+        let logs = proof_dir.path().join("tool-logs");
+        std::fs::create_dir_all(&logs)?;
+        let commit = "a".repeat(40);
+        let mut targets = Vec::new();
+        for (target, log_stem) in FUZZ_TARGETS {
+            let stdout = format!("{target} stdout").into_bytes();
+            let stderr = format!("{target} stderr").into_bytes();
+            std::fs::write(logs.join(format!("{log_stem}.stdout.log")), &stdout)?;
+            std::fs::write(logs.join(format!("{log_stem}.stderr.log")), &stderr)?;
+            targets.push(ToolTargetEvidenceV1 {
+                target: target.to_owned(),
+                command: fuzz_target_command(target, 120),
+                requested_duration_seconds: Some(120),
+                observed_duration_millis: 1,
+                exit_code: Some(0),
+                log_stem: log_stem.to_owned(),
+                stdout_digest: sha256_hex(&stdout),
+                stderr_digest: sha256_hex(&stderr),
+            });
+        }
+        let mut receipt = ToolReceiptV1 {
+            contract_version: "fuzz-receipt-v1".to_owned(),
+            tool: "cargo-fuzz/libFuzzer".to_owned(),
+            tool_version: "cargo-fuzz 0.13.2".to_owned(),
+            toolchain: FUZZ_NIGHTLY.to_owned(),
+            source_commit: commit.clone(),
+            status: EvidenceStatusV1::Passed,
+            targets,
+            note: "Each of four fuzz targets requested 120 seconds.".to_owned(),
+            receipt_digest: String::new(),
+        };
+        receipt.receipt_digest = receipt.recompute_digest()?;
+        verify_fuzz_receipt(&receipt, proof_dir.path(), &commit)?;
+
+        receipt.targets[0].command.insert(5, "--locked".to_owned());
+        receipt.receipt_digest = receipt.recompute_digest()?;
+        let error = verify_fuzz_receipt(&receipt, proof_dir.path(), &commit)
+            .err()
+            .context("obsolete --locked fuzz command unexpectedly verified")?;
+        assert!(error.to_string().contains("target or command"));
+        Ok(())
+    }
+
+    #[test]
     fn rehashed_tool_receipt_without_bound_logs_is_rejected() -> anyhow::Result<()> {
         let proof_dir = tempfile::tempdir()?;
         let commit = "a".repeat(40);
@@ -1887,6 +2168,8 @@ mod tests {
                     "naome-memory-core".to_owned(),
                     "--timeout".to_owned(),
                     "120".to_owned(),
+                    "--output".to_owned(),
+                    "target/proofs/mutation-tool".to_owned(),
                 ],
                 requested_duration_seconds: None,
                 observed_duration_millis: 1,
