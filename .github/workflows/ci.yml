@@ -233,6 +233,8 @@ jobs:
         run: rustup toolchain install 1.95.0 --profile minimal --component llvm-tools-preview
       - name: Install pinned coverage tool
         run: cargo +1.95.0 install --locked cargo-llvm-cov --version 0.8.7
+      - name: Create coverage evidence directory
+        run: mkdir -p target/coverage
       - name: Enforce 80 percent workspace line coverage
         run: cargo +1.95.0 llvm-cov --workspace --all-features --locked --fail-under-lines 80 --lcov --output-path target/coverage/workspace.lcov
       - name: Enforce 90 percent core and verifier line coverage

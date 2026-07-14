@@ -10,8 +10,8 @@ publish = false
 
 [dependencies]
 hex.workspace = true
-naome-memory-core = { path = "../naome-memory-core" }
-naome-memory-sqlite = { path = "../naome-memory-sqlite", features = ["lab-fault-injection"] }
+naome-memory-core = { path = "../naome-memory-core", version = "=0.1.0" }
+naome-memory-sqlite = { path = "../naome-memory-sqlite", version = "=0.1.0", features = ["lab-fault-injection"] }
 rand_chacha = "0.3.1"
 rand_core = "0.6.4"
 rusqlite.workspace = true
