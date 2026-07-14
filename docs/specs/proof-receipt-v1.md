@@ -117,6 +117,12 @@ full-evidence digest over the logical scale closure plus explicitly labeled
 wall-time, RSS, disk, and phase observations. Its logical digest intentionally
 excludes host observations so Linux and macOS can compare the same decisions;
 release preflight still requires the full evidence digest and exact tag commit.
+At 100,000 atoms, a missing required resource measurement is `inconclusive`,
+while an observed threshold breach is `failed`; neither status satisfies the
+pass-only verifier. Once the full logical path has completed, the harness
+publishes the newly bound core and scale receipts before returning a nonzero
+status so rejected evidence remains inspectable instead of leaving an older
+receipt in place.
 
 ## Tamper behavior
 
