@@ -8,7 +8,6 @@ The JSON files in this directory describe desired state. They are not evidence t
 2. Stop if `Lamentis-operating-systems/naome-memory` already exists; do not invent a different name.
 3. Install the DCO GitHub App for this repository and enable web commit sign-off. If organization policy prevents installation, stop rather than omitting the `DCO` gate.
 4. Enable GitHub Private Vulnerability Reporting.
-5. Verify that the committed SSH public key in `allowed_signers` is registered as the maintainer's GitHub signing key before creating release tags.
 
 Create the public repository from the existing source:
 
