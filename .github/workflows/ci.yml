@@ -106,13 +106,16 @@ jobs:
       - name: Persist, plan, replay, apply, verify, and retrieve 5000 atoms
         run: cargo +1.95.0 run --release --locked -p xtask -- scale --atoms 5000
       - name: Install pinned Draft 2020-12 validator
+        if: ${{ always() }}
         run: python3 -m pip install --disable-pip-version-check --no-input --requirement .github/schema-requirements.txt
       - name: Validate core receipt projection
+        if: ${{ always() }}
         run: >-
           python3 scripts/validate_json_schemas.py
           --bind schemas/scale-receipt-v1.schema.json=target/proofs/scale-receipt.json
           --bind schemas/proof-receipt-v1.schema.json=target/proofs/scale-core-retirement-receipt.json
       - name: Upload scale receipt
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pr-scale-${{ github.sha }}
