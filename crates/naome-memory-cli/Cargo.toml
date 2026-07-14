@@ -16,9 +16,9 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 hex.workspace = true
-naome-memory-core = { path = "../naome-memory-core" }
-naome-memory-lab = { path = "../naome-memory-lab" }
-naome-memory-sqlite = { path = "../naome-memory-sqlite" }
+naome-memory-core = { path = "../naome-memory-core", version = "=0.1.0" }
+naome-memory-lab = { path = "../naome-memory-lab", version = "=0.1.0" }
+naome-memory-sqlite = { path = "../naome-memory-sqlite", version = "=0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
