@@ -9,7 +9,7 @@ pinning and dependency policy remain centralized. Once that manifest is
 present, run a target with, for example:
 
 ```text
-cargo fuzz run canonical --locked -- -max_total_time=120
+cargo fuzz run canonical -- -max_total_time=120
 ```
 
 No corpus output is an authority artifact. A minimized regression must be
