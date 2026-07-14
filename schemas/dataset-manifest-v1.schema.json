@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/dataset-manifest-v1.schema.json",
+  "title": "NAOME Memory Synthetic Dataset Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "contract_version",
+    "generator_version",
+    "generator_source",
+    "synthetic_only",
+    "profile_datasets",
+    "seed_derivation",
+    "comparator_contract",
+    "datasets",
+    "empirical_thresholds_ppm"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "contract_version": { "const": "dataset-manifest-v1" },
+    "generator_version": { "const": "synthetic-world-v1" },
+    "generator_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "const": "crates/naome-memory-lab/src/synthetic.rs" },
+        "sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "synthetic_only": { "const": true },
+    "profile_datasets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pr", "deep"],
+      "properties": {
+        "pr": { "const": "calibration-v1" },
+        "deep": { "const": "holdout-v1" }
+      }
+    },
+    "seed_derivation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "encoding", "domains"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "encoding": { "const": "domain || u64_be(world_index)" },
+        "domains": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["golden-v1", "calibration-v1", "holdout-v1", "adversarial-v1", "scale-v1"],
+          "properties": {
+            "golden-v1": { "const": "naome-memory:dataset:golden-v1\u0000" },
+            "calibration-v1": { "const": "naome-memory:dataset:calibration-v1\u0000" },
+            "holdout-v1": { "const": "naome-memory:dataset:holdout-v1\u0000" },
+            "adversarial-v1": { "const": "naome-memory:dataset:adversarial-v1\u0000" },
+            "scale-v1": { "const": "naome-memory:dataset:scale-v1\u0000" }
+          }
+        }
+      }
+    },
+    "comparator_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["budget_rule", "semantic_only_selection", "hybrid_selection", "recency_only_selection", "used_bytes_reported_separately"],
+      "properties": {
+        "budget_rule": { "const": "per-world shared maximum byte cap" },
+        "semantic_only_selection": { "const": "all semantic bodies emitted by poc-v1" },
+        "hybrid_selection": { "const": "the same semantic bodies plus only lottery-selected exact packages" },
+        "recency_only_selection": { "const": "all source episodes ordered newest-first" },
+        "used_bytes_reported_separately": { "const": true }
+      }
+    },
+    "datasets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["golden-v1", "calibration-v1", "holdout-v1", "adversarial-v1", "scale-v1"],
+      "properties": {
+        "golden-v1": { "$ref": "#/$defs/goldenDataset" },
+        "calibration-v1": { "$ref": "#/$defs/calibrationDataset" },
+        "holdout-v1": { "$ref": "#/$defs/holdoutDataset" },
+        "adversarial-v1": { "$ref": "#/$defs/adversarialDataset" },
+        "scale-v1": { "$ref": "#/$defs/scaleDataset" }
+      }
+    },
+    "empirical_thresholds_ppm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["semantic_utility_ndcg_delta_lower_95_ci", "episodic_rare_recovery_delta_lower_95_ci", "ordinary_utility_preserved_delta_lower_95_ci"],
+      "properties": {
+        "semantic_utility_ndcg_delta_lower_95_ci": { "const": 100000 },
+        "episodic_rare_recovery_delta_lower_95_ci": { "const": 80000 },
+        "ordinary_utility_preserved_delta_lower_95_ci": { "const": -20000 }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "worldIds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z-]+-v1/world-[0-9]{4}$" }
+    },
+    "queryJudgments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ordinary", "rare"],
+      "properties": {
+        "ordinary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["query_id", "terms", "topic_keys", "relevant_episode_atom_indices", "relevant_semantic_topic_key", "metric"],
+          "properties": {
+            "query_id": { "const": "ordinary-build-proof-v1" },
+            "terms": { "const": ["build", "proof"] },
+            "topic_keys": { "const": ["build-proof"] },
+            "relevant_episode_atom_indices": { "const": [0, 1, 2] },
+            "relevant_semantic_topic_key": { "const": "build-proof" },
+            "metric": { "const": "ndcg_at_10" }
+          }
+        },
+        "rare": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["query_id_format", "term_format", "relevant_episode_atom_indices", "metric"],
+          "properties": {
+            "query_id_format": { "const": "rare-query:{dataset_id}:{world_index:04}:{atom_index:02}" },
+            "term_format": { "const": "rare:{dataset_id}:{world_index:04}:{atom_index:02}" },
+            "relevant_episode_atom_indices": { "const": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] },
+            "metric": { "const": "recall_at_1" }
+          }
+        }
+      }
+    },
+    "goldenDataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["world_count", "atom_count", "world_ids", "golden_seed_scenarios", "required_fates"],
+      "properties": {
+        "world_count": { "const": 1 },
+        "atom_count": { "const": 20 },
+        "world_ids": { "$ref": "#/$defs/worldIds", "minItems": 1, "maxItems": 1 },
+        "golden_seed_scenarios": {
+          "type": "array",
+          "minItems": 16,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/digest" }
+        },
+        "required_fates": { "const": ["semantic_source_forgotten", "semantic_source_and_exact", "exact_only", "header_only"] }
+      }
+    },
+    "calibrationDataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["world_count", "atom_count", "world_ids", "policy_tuning_allowed", "query_judgments"],
+      "properties": {
+        "world_count": { "const": 40 },
+        "atom_count": { "const": 10 },
+        "world_ids": { "$ref": "#/$defs/worldIds", "minItems": 40, "maxItems": 40 },
+        "policy_tuning_allowed": { "const": true },
+        "query_judgments": { "$ref": "#/$defs/queryJudgments" }
+      }
+    },
+    "holdoutDataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["world_count", "atom_count", "world_ids", "policy_tuning_allowed", "frozen", "query_judgments"],
+      "properties": {
+        "world_count": { "const": 100 },
+        "atom_count": { "const": 10 },
+        "world_ids": { "$ref": "#/$defs/worldIds", "minItems": 100, "maxItems": 100 },
+        "policy_tuning_allowed": { "const": false },
+        "frozen": { "const": true },
+        "query_judgments": { "$ref": "#/$defs/queryJudgments" }
+      }
+    },
+    "adversarialDataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["world_count", "atom_count", "world_ids", "cases"],
+      "properties": {
+        "world_count": { "const": 24 },
+        "atom_count": { "const": 10 },
+        "world_ids": { "$ref": "#/$defs/worldIds", "minItems": 24, "maxItems": 24 },
+        "cases": { "type": "array", "minItems": 14, "uniqueItems": true, "items": { "type": "string" } }
+      }
+    },
+    "scaleDataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pr_atom_count", "deep_atom_count", "body_size_bytes", "deep_envelope"],
+      "properties": {
+        "pr_atom_count": { "const": 5000 },
+        "deep_atom_count": { "const": 100000 },
+        "body_size_bytes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["p50", "p95", "maximum"],
+          "properties": {
+            "p50": { "const": 16384 },
+            "p95": { "const": 65536 },
+            "maximum": { "const": 262144 }
+          }
+        },
+        "deep_envelope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maximum_wall_seconds", "maximum_rss_bytes", "maximum_disk_bytes"],
+          "properties": {
+            "maximum_wall_seconds": { "const": 1800 },
+            "maximum_rss_bytes": { "const": 6442450944 },
+            "maximum_disk_bytes": { "const": 10737418240 }
+          }
+        }
+      }
+    }
+  }
+}

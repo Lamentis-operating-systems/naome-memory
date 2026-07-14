@@ -1,0 +1,15 @@
+/target/
+/.naome-memory/
+/fuzz/artifacts/
+/fuzz/corpus/
+/.idea/
+/.vscode/
+.DS_Store
+*.profraw
+*.profdata
+coverage/
+artifacts/
+*.db
+*.db-shm
+*.db-wal
+*.tmp

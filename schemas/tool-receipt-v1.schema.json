@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/tool-receipt-v1.schema.json",
+  "title": "NAOME Memory bounded tool evidence receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version", "tool", "tool_version", "toolchain", "source_commit",
+    "status", "targets", "note", "receipt_digest"
+  ],
+  "properties": {
+    "contract_version": { "enum": ["mutation-receipt-v1", "fuzz-receipt-v1"] },
+    "tool": { "enum": ["cargo-mutants", "cargo-fuzz/libFuzzer"] },
+    "tool_version": { "type": "string", "minLength": 1 },
+    "toolchain": { "type": "string", "minLength": 1 },
+    "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "status": { "enum": ["passed", "failed", "inconclusive"] },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/target" }
+    },
+    "note": { "type": "string", "minLength": 1 },
+    "receipt_digest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target", "command", "requested_duration_seconds", "observed_duration_millis",
+        "exit_code", "log_stem", "stdout_digest", "stderr_digest"
+      ],
+      "properties": {
+        "target": { "type": "string", "minLength": 1 },
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requested_duration_seconds": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "null" }
+          ]
+        },
+        "observed_duration_millis": { "type": "integer", "minimum": 0 },
+        "exit_code": {
+          "oneOf": [
+            { "type": "integer" },
+            { "type": "null" }
+          ]
+        },
+        "log_stem": { "type": "string", "pattern": "^[A-Za-z0-9-]+$" },
+        "stdout_digest": { "$ref": "#/$defs/digest" },
+        "stderr_digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

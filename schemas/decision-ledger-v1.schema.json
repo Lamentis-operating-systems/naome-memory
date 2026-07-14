@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/decision-ledger-v1.schema.json",
+  "title": "NAOME Memory Lab Decision Ledger v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "profile", "dataset_id", "entries", "golden_fate_evidence", "crash_campaign_evidence", "ledger_digest"],
+  "properties": {
+    "contract_version": { "const": "decision-ledger-v1" },
+    "profile": { "enum": ["pr", "deep"] },
+    "dataset_id": { "enum": ["calibration-v1", "holdout-v1"] },
+    "entries": {
+      "type": "array",
+      "minItems": 40,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/entry" }
+    },
+    "golden_fate_evidence": {
+      "type": "array",
+      "minItems": 16,
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/goldenFate" }
+    },
+    "crash_campaign_evidence": {
+      "oneOf": [
+        { "$ref": "#/$defs/crashCampaign" },
+        { "type": "null" }
+      ]
+    },
+    "ledger_digest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "signedPpm": { "type": "integer", "minimum": -1000000, "maximum": 1000000 },
+    "digestArray": { "type": "array", "items": { "$ref": "#/$defs/digest" } },
+    "gradedQrels": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[0-9a-f]{64}$" },
+      "additionalProperties": { "const": 1 }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dataset_id", "world_id", "world_index", "world_seed", "input_digest", "byte_budget_evidence", "query_evidence", "result_digest"],
+      "properties": {
+        "dataset_id": { "enum": ["calibration-v1", "holdout-v1"] },
+        "world_id": { "type": "string", "pattern": "^(calibration|holdout)-v1/world-[0-9]{4}$" },
+        "world_index": { "type": "integer", "minimum": 0 },
+        "world_seed": { "$ref": "#/$defs/digest" },
+        "input_digest": { "$ref": "#/$defs/digest" },
+        "byte_budget_evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["semantic_vs_recency_budget_bytes", "hybrid_vs_semantic_budget_bytes", "recency_only_used_bytes", "semantic_only_used_bytes", "hybrid_used_bytes", "all_models_within_shared_budgets", "all_planned_semantic_candidates_used"],
+          "properties": {
+            "semantic_vs_recency_budget_bytes": { "type": "integer", "minimum": 0 },
+            "hybrid_vs_semantic_budget_bytes": { "type": "integer", "minimum": 0 },
+            "recency_only_used_bytes": { "type": "integer", "minimum": 0 },
+            "semantic_only_used_bytes": { "type": "integer", "minimum": 0 },
+            "hybrid_used_bytes": { "type": "integer", "minimum": 0 },
+            "all_models_within_shared_budgets": { "type": "boolean" },
+            "all_planned_semantic_candidates_used": { "type": "boolean" }
+          }
+        },
+        "query_evidence": {
+          "type": "array",
+          "minItems": 12,
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["query_id", "comparison_id", "left_score_ppm", "right_score_ppm", "delta_ppm", "judged_relevant_atom_ids", "judged_relevance_grades", "left_hit_ids", "right_hit_ids"],
+            "properties": {
+              "query_id": { "type": "string", "minLength": 1 },
+              "comparison_id": { "enum": ["semantic_only_vs_recency_only", "ordinary_ndcg_at_10", "rare_recall_at_1"] },
+              "left_score_ppm": { "$ref": "#/$defs/signedPpm" },
+              "right_score_ppm": { "$ref": "#/$defs/signedPpm" },
+              "delta_ppm": { "$ref": "#/$defs/signedPpm" },
+              "judged_relevant_atom_ids": { "$ref": "#/$defs/digestArray" },
+              "judged_relevance_grades": { "$ref": "#/$defs/gradedQrels" },
+              "left_hit_ids": { "$ref": "#/$defs/digestArray" },
+              "right_hit_ids": { "$ref": "#/$defs/digestArray" }
+            }
+          }
+        },
+        "result_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "goldenFate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenario_id", "seed", "plan_digest", "semantic_source_forgotten", "semantic_source_and_exact", "exact_only", "header_only"],
+      "properties": {
+        "scenario_id": { "type": "string", "pattern": "^golden-v1/lottery-[0-9]{2}$" },
+        "seed": { "$ref": "#/$defs/digest" },
+        "plan_digest": { "$ref": "#/$defs/digest" },
+        "semantic_source_forgotten": { "type": "integer", "minimum": 0 },
+        "semantic_source_and_exact": { "type": "integer", "minimum": 0 },
+        "exact_only": { "type": "integer", "minimum": 0 },
+        "header_only": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "crashScenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fault_point", "operation", "child_terminated_while_transaction_open", "complete_pre_state_observed", "complete_post_state_observed", "recovery_replay_succeeded", "idempotent_replay_succeeded", "sqlite_integrity_ok", "foreign_keys_clean", "pre_state_digest", "post_crash_state_digest", "post_replay_state_digest", "action_digest", "result_digest"],
+      "properties": {
+        "fault_point": { "enum": ["draft_append_after_sequence_claim", "draft_append_after_event_insert", "draft_seal_after_atom_insert", "draft_seal_after_status_update", "retirement_after_run_creation", "retirement_after_semantic_insertion", "retirement_after_decision_persistence", "retirement_after_state_mutation", "retirement_after_forgetting", "retirement_after_artifact_pins", "retirement_after_receipt_insertion", "retirement_after_run_completion", "retirement_before_commit"] },
+        "operation": { "enum": ["draft_append", "draft_seal", "retirement_apply"] },
+        "child_terminated_while_transaction_open": { "const": true },
+        "complete_pre_state_observed": { "const": true },
+        "complete_post_state_observed": { "const": true },
+        "recovery_replay_succeeded": { "const": true },
+        "idempotent_replay_succeeded": {
+          "oneOf": [
+            { "const": true },
+            { "type": "null" }
+          ]
+        },
+        "sqlite_integrity_ok": { "const": true },
+        "foreign_keys_clean": { "const": true },
+        "pre_state_digest": { "$ref": "#/$defs/digest" },
+        "post_crash_state_digest": { "$ref": "#/$defs/digest" },
+        "post_replay_state_digest": { "$ref": "#/$defs/digest" },
+        "action_digest": { "$ref": "#/$defs/digest" },
+        "result_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "crashCampaign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "harness_source_digest", "repository_source_digest", "policy_digest", "scenarios", "campaign_digest"],
+      "properties": {
+        "contract_version": { "const": "crash-campaign-evidence-v1" },
+        "harness_source_digest": { "$ref": "#/$defs/digest" },
+        "repository_source_digest": { "$ref": "#/$defs/digest" },
+        "policy_digest": { "$ref": "#/$defs/digest" },
+        "scenarios": {
+          "type": "array",
+          "minItems": 13,
+          "maxItems": 13,
+          "items": { "$ref": "#/$defs/crashScenario" }
+        },
+        "campaign_digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:17"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - "area:supply-chain"
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:47"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - "area:governance"
+      - "area:supply-chain"

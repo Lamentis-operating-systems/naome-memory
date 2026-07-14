@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/seal-episode-request-v1.schema.json",
+  "title": "NAOME Memory SealEpisodeRequestV1 JSON projection",
+  "x-naome-typed-fixture": true,
+  "$ref": "public-core-v1.defs.json#/$defs/sealEpisodeRequest"
+}

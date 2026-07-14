@@ -1,0 +1,47 @@
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "naome-memory-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+naome-memory-core = { path = "../crates/naome-memory-core" }
+naome-memory-sqlite = { path = "../crates/naome-memory-sqlite" }
+serde_json = "1.0.149"
+tempfile = "3.24.0"
+
+[[bin]]
+name = "canonical"
+path = "fuzz_targets/canonical.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decoder"
+path = "fuzz_targets/decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "receipt_verifier"
+path = "fuzz_targets/receipt_verifier.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sqlite_ingest"
+path = "fuzz_targets/sqlite_ingest.rs"
+test = false
+doc = false
+bench = false

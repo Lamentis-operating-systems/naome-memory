@@ -1,0 +1,30 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Local and CI orchestration for NAOME Memory"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+naome-memory-core = { path = "../crates/naome-memory-core" }
+naome-memory-lab = { path = "../crates/naome-memory-lab" }
+naome-memory-sqlite = { path = "../crates/naome-memory-sqlite" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+toml = "0.9.11"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"

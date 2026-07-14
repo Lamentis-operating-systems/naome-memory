@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/scale-receipt-v1.schema.json",
+  "title": "NAOME Memory scale evidence receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version", "source_commit", "status", "atom_count", "p50_body_bytes",
+    "p95_body_bytes", "maximum_body_bytes", "logical_body_bytes", "atom_stream_digest",
+    "logical_digest", "input_set_digest", "plan_digest", "receipt_digest",
+    "retrieval_digest", "semantic_atom_count", "episodic_winner_count", "normal_hit_count",
+    "spontaneous_hit_count", "plan_replay_verified", "receipt_verified", "apply_idempotent",
+    "observed_phase_millis", "observed_wall_millis", "observed_max_rss_bytes",
+    "observed_disk_bytes", "note", "evidence_digest"
+  ],
+  "properties": {
+    "contract_version": { "const": "scale-receipt-v1" },
+    "source_commit": {
+      "oneOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        { "const": "uncommitted" }
+      ]
+    },
+    "status": { "enum": ["passed", "failed", "inconclusive"] },
+    "atom_count": { "type": "integer", "minimum": 1, "maximum": 100000 },
+    "p50_body_bytes": { "type": "integer", "minimum": 0, "maximum": 262144 },
+    "p95_body_bytes": { "type": "integer", "minimum": 0, "maximum": 262144 },
+    "maximum_body_bytes": { "type": "integer", "minimum": 0, "maximum": 262144 },
+    "logical_body_bytes": { "type": "integer", "minimum": 0 },
+    "atom_stream_digest": { "$ref": "#/$defs/digest" },
+    "logical_digest": { "$ref": "#/$defs/digest" },
+    "input_set_digest": { "$ref": "#/$defs/digest" },
+    "plan_digest": { "$ref": "#/$defs/digest" },
+    "receipt_digest": { "$ref": "#/$defs/digest" },
+    "retrieval_digest": { "$ref": "#/$defs/digest" },
+    "semantic_atom_count": { "type": "integer", "minimum": 0 },
+    "episodic_winner_count": { "type": "integer", "minimum": 0 },
+    "normal_hit_count": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "spontaneous_hit_count": { "type": "integer", "minimum": 0, "maximum": 3 },
+    "plan_replay_verified": { "type": "boolean" },
+    "receipt_verified": { "type": "boolean" },
+    "apply_idempotent": { "type": "boolean" },
+    "observed_phase_millis": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "observed_wall_millis": { "type": "integer", "minimum": 0 },
+    "observed_max_rss_bytes": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "null" }
+      ]
+    },
+    "observed_disk_bytes": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "null" }
+      ]
+    },
+    "note": { "type": "string", "minLength": 1 },
+    "evidence_digest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "description": "Experimental deterministic memory consolidation and episodic-retention engine for the NAOME autonomous agent kernel.",
+  "visibility": "public",
+  "has_issues": true,
+  "has_projects": false,
+  "has_wiki": false,
+  "has_discussions": false,
+  "has_downloads": false,
+  "allow_squash_merge": true,
+  "allow_merge_commit": false,
+  "allow_rebase_merge": false,
+  "allow_auto_merge": false,
+  "delete_branch_on_merge": true,
+  "web_commit_signoff_required": true,
+  "default_workflow_permissions": "read",
+  "can_approve_pull_request_reviews": false,
+  "topics": [
+    "rust",
+    "memory",
+    "agents",
+    "autonomous-agents",
+    "sqlite",
+    "reproducibility"
+  ],
+  "security": {
+    "dependabot_alerts": true,
+    "dependabot_security_updates": true,
+    "private_vulnerability_reporting": true,
+    "secret_scanning": true,
+    "secret_scanning_push_protection": true
+  }
+}

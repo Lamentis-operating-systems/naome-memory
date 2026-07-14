@@ -1,0 +1,32 @@
+[package]
+name = "naome-memory-lab"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Synthetic worlds, reference models, metrics, and proof receipts for NAOME Memory"
+publish = false
+
+[dependencies]
+hex.workspace = true
+naome-memory-core = { path = "../naome-memory-core" }
+naome-memory-sqlite = { path = "../naome-memory-sqlite", features = ["lab-fault-injection"] }
+rand_chacha = "0.3.1"
+rand_core = "0.6.4"
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tempfile.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+float_arithmetic = "deny"

@@ -1,0 +1,573 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/public-core-v1.defs.json",
+  "title": "NAOME Memory public core v1 shared definitions",
+  "$defs": {
+    "u64": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+    "usize": { "type": "integer", "minimum": 0 },
+    "ppm": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nullableDigest": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/digest" }
+      ]
+    },
+    "nullableString": { "type": ["string", "null"] },
+    "nullableU64": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/u64" }
+      ]
+    },
+    "nullableUsize": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/usize" }
+      ]
+    },
+    "digestArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/digest" }
+    },
+    "uniqueDigestArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/digest" }
+    },
+    "stringArray": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "stringSet": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string" },
+      "x-naome-canonical-order": "raw-utf8-ascending"
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "x-naome-canonical-order": "raw-utf8-key-ascending"
+    },
+    "scope": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/scope"
+    },
+    "observation": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/observation"
+    },
+    "interpretation": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/interpretation"
+    },
+    "belief": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/belief"
+    },
+    "decisionRecord": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/decision"
+    },
+    "actionRecord": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/action"
+    },
+    "rejectedAlternative": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/rejectedAlternative"
+    },
+    "outcome": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/outcome"
+    },
+    "feedback": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/feedback"
+    },
+    "formationSignals": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/formationSignals"
+    },
+    "artifact": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/artifact"
+    },
+    "relation": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/relation"
+    },
+    "consolidationScore": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json#/$defs/consolidationScore"
+    },
+    "memoryAtomBody": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/memory-atom-v1.schema.json"
+    },
+    "policy": {
+      "$ref": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/policy-v1.schema.json"
+    },
+    "episodeEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence", "at_us", "scope", "observation", "interpretation", "belief", "decision", "action"
+      ],
+      "properties": {
+        "sequence": { "$ref": "#/$defs/u64" },
+        "at_us": { "$ref": "#/$defs/u64" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "observation": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/observation" }
+          ]
+        },
+        "interpretation": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/interpretation" }
+          ]
+        },
+        "belief": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/belief" }
+          ]
+        },
+        "decision": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/decisionRecord" }
+          ]
+        },
+        "action": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/actionRecord" }
+          ]
+        }
+      }
+    },
+    "episodeBuffer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "started_at_us", "events", "continues"],
+      "properties": {
+        "scope": { "$ref": "#/$defs/scope" },
+        "started_at_us": { "$ref": "#/$defs/u64" },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/episodeEvent" }
+        },
+        "continues": { "$ref": "#/$defs/nullableDigest" }
+      }
+    },
+    "sealEpisodeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "as_of_us", "ended_at_us", "trigger", "seal_reason", "goal", "plan",
+        "internal_state_before", "internal_state_after", "rejected_alternatives", "outcome",
+        "feedback", "formation_signals", "topic_keys", "entity_ids", "outcome_class",
+        "goal_key", "retention_permission", "artifacts", "relations"
+      ],
+      "properties": {
+        "as_of_us": { "$ref": "#/$defs/u64" },
+        "ended_at_us": { "$ref": "#/$defs/u64" },
+        "trigger": { "type": "string", "minLength": 1 },
+        "seal_reason": {
+          "enum": [
+            "goal_completed", "terminal_failure", "goal_changed", "context_changed", "checkpoint", "handoff", "timeout"
+          ]
+        },
+        "goal": { "$ref": "#/$defs/nullableString" },
+        "plan": { "$ref": "#/$defs/stringArray" },
+        "internal_state_before": { "$ref": "#/$defs/stringMap" },
+        "internal_state_after": { "$ref": "#/$defs/stringMap" },
+        "rejected_alternatives": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/rejectedAlternative" }
+        },
+        "outcome": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/outcome" }
+          ]
+        },
+        "feedback": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/feedback" }
+        },
+        "formation_signals": { "$ref": "#/$defs/formationSignals" },
+        "topic_keys": { "$ref": "#/$defs/stringSet" },
+        "entity_ids": { "$ref": "#/$defs/stringSet" },
+        "outcome_class": { "$ref": "#/$defs/nullableString" },
+        "goal_key": { "$ref": "#/$defs/nullableString" },
+        "retention_permission": {
+          "enum": ["transient_only", "semantic_allowed", "semantic_and_exact_allowed"]
+        },
+        "artifacts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/artifact" }
+        },
+        "relations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/relation" }
+        }
+      }
+    },
+    "sealedEpisode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["atom_id", "body", "canonical_size_bytes", "target_size_exceeded"],
+      "properties": {
+        "atom_id": { "$ref": "#/$defs/digest" },
+        "body": { "$ref": "#/$defs/memoryAtomBody" },
+        "canonical_size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 262144
+        },
+        "target_size_exceeded": { "type": "boolean" }
+      }
+    },
+    "sealedEpisodeChain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "source_event_count", "episodes"],
+      "properties": {
+        "contract_version": { "const": "sealed-episode-chain-v1" },
+        "source_event_count": { "type": "integer", "minimum": 1 },
+        "episodes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/sealedEpisode" }
+        }
+      }
+    },
+    "atomState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "retention_tier", "content_status", "expires_at_us", "superseded_by",
+        "feedback_positive", "feedback_negative", "retrieval_count", "retirement_run_id"
+      ],
+      "properties": {
+        "retention_tier": {
+          "enum": ["short_term", "semantic_long_term", "episodic_long_term", "dual_long_term", "header_only"]
+        },
+        "content_status": { "enum": ["present", "forgotten", "corrupt"] },
+        "expires_at_us": { "$ref": "#/$defs/nullableU64" },
+        "superseded_by": { "$ref": "#/$defs/nullableDigest" },
+        "feedback_positive": { "$ref": "#/$defs/u64" },
+        "feedback_negative": { "$ref": "#/$defs/u64" },
+        "retrieval_count": { "$ref": "#/$defs/u64" },
+        "retirement_run_id": { "$ref": "#/$defs/nullableDigest" }
+      }
+    },
+    "retirementCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["atom_id", "body_digest", "body", "state", "integrity", "exact_package_bytes"],
+      "properties": {
+        "atom_id": { "$ref": "#/$defs/digest" },
+        "body_digest": { "$ref": "#/$defs/digest" },
+        "body": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/memoryAtomBody" }
+          ]
+        },
+        "state": { "$ref": "#/$defs/atomState" },
+        "integrity": { "enum": ["complete", "missing_body", "missing_artifact", "digest_mismatch"] },
+        "exact_package_bytes": { "$ref": "#/$defs/u64" }
+      }
+    },
+    "retirementSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "memory_space_id", "cohort_day", "as_of_us", "atoms"],
+      "properties": {
+        "contract_version": { "const": "retirement-snapshot-v1" },
+        "memory_space_id": { "type": "string", "minLength": 1 },
+        "cohort_day": { "$ref": "#/$defs/u64" },
+        "as_of_us": { "$ref": "#/$defs/u64" },
+        "atoms": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": { "$ref": "#/$defs/retirementCandidate" }
+        }
+      }
+    },
+    "plannedSemanticAtom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["atom_id", "body_digest", "canonical_size_bytes", "body"],
+      "properties": {
+        "atom_id": { "$ref": "#/$defs/digest" },
+        "body_digest": { "$ref": "#/$defs/digest" },
+        "canonical_size_bytes": { "$ref": "#/$defs/u64" },
+        "body": { "$ref": "#/$defs/memoryAtomBody" }
+      }
+    },
+    "semanticCandidateDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["atom_id", "source_ids", "score", "canonical_size_bytes", "disposition"],
+      "properties": {
+        "atom_id": { "$ref": "#/$defs/digest" },
+        "source_ids": { "$ref": "#/$defs/uniqueDigestArray" },
+        "score": { "$ref": "#/$defs/consolidationScore" },
+        "canonical_size_bytes": { "$ref": "#/$defs/u64" },
+        "disposition": {
+          "enum": ["selected", "skipped_atom_hard_limit", "skipped_count_budget", "skipped_byte_budget"]
+        }
+      }
+    },
+    "retirementDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "atom_id", "semantic_atom_ids", "exact_retained", "exact_artifact_digests", "forget_episode_body"
+      ],
+      "properties": {
+        "atom_id": { "$ref": "#/$defs/digest" },
+        "semantic_atom_ids": { "$ref": "#/$defs/uniqueDigestArray" },
+        "exact_retained": { "type": "boolean" },
+        "exact_artifact_digests": { "$ref": "#/$defs/uniqueDigestArray" },
+        "forget_episode_body": { "type": "boolean" }
+      }
+    },
+    "retirementPostStateAtom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "atom_id", "atom_kind", "repository_id", "task_id", "agent_id", "session_id",
+        "recorded_at_us", "header_body_digest", "header_body_bytes", "retention_permission",
+        "provenance_digest", "stored_body_digest", "retention_tier", "content_status",
+        "expires_at_us", "superseded_by", "feedback_positive", "feedback_negative",
+        "retrieval_count", "retirement_run_bound", "search_projection_present",
+        "pinned_artifact_digests"
+      ],
+      "properties": {
+        "atom_id": { "$ref": "#/$defs/digest" },
+        "atom_kind": { "enum": ["episode", "semantic"] },
+        "repository_id": { "$ref": "#/$defs/nullableString" },
+        "task_id": { "$ref": "#/$defs/nullableString" },
+        "agent_id": { "$ref": "#/$defs/nullableString" },
+        "session_id": { "$ref": "#/$defs/nullableString" },
+        "recorded_at_us": { "$ref": "#/$defs/u64" },
+        "header_body_digest": { "$ref": "#/$defs/digest" },
+        "header_body_bytes": { "$ref": "#/$defs/u64" },
+        "retention_permission": {
+          "enum": ["transient_only", "semantic_allowed", "semantic_and_exact_allowed"]
+        },
+        "provenance_digest": { "$ref": "#/$defs/digest" },
+        "stored_body_digest": { "$ref": "#/$defs/nullableDigest" },
+        "retention_tier": {
+          "enum": ["short_term", "semantic_long_term", "episodic_long_term", "dual_long_term", "header_only"]
+        },
+        "content_status": { "enum": ["present", "forgotten", "corrupt"] },
+        "expires_at_us": { "$ref": "#/$defs/nullableU64" },
+        "superseded_by": { "$ref": "#/$defs/nullableDigest" },
+        "feedback_positive": { "$ref": "#/$defs/u64" },
+        "feedback_negative": { "$ref": "#/$defs/u64" },
+        "retrieval_count": { "$ref": "#/$defs/u64" },
+        "retirement_run_bound": { "type": "boolean" },
+        "search_projection_present": { "type": "boolean" },
+        "pinned_artifact_digests": { "$ref": "#/$defs/uniqueDigestArray" }
+      }
+    },
+    "retirementPostState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["memory_space_id", "source_atoms", "semantic_atoms"],
+      "properties": {
+        "memory_space_id": { "type": "string", "minLength": 1 },
+        "source_atoms": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/retirementPostStateAtom" }
+        },
+        "semantic_atoms": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/retirementPostStateAtom" }
+        }
+      }
+    },
+    "retirementPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version", "policy_id", "policy_digest", "seed", "memory_space_id",
+        "cohort_day", "as_of_us", "input_set_digest", "rng_identifier",
+        "episodic_population_digest", "episodic_population_count", "episodic_winner_budget",
+        "episodic_winner_bytes", "semantic_count_budget", "semantic_body_bytes",
+        "semantic_decisions", "semantic_atoms", "episodic_winners", "decisions",
+        "projected_post_state", "projected_state_digest"
+      ],
+      "properties": {
+        "contract_version": { "const": "retirement-plan-v1" },
+        "policy_id": { "const": "poc-v1" },
+        "policy_digest": { "$ref": "#/$defs/digest" },
+        "seed": { "$ref": "#/$defs/digest" },
+        "memory_space_id": { "type": "string", "minLength": 1 },
+        "cohort_day": { "$ref": "#/$defs/u64" },
+        "as_of_us": { "$ref": "#/$defs/u64" },
+        "input_set_digest": { "$ref": "#/$defs/digest" },
+        "rng_identifier": { "const": "chacha20-rand_chacha-0.3/partial-fisher-yates-v1" },
+        "episodic_population_digest": { "$ref": "#/$defs/digest" },
+        "episodic_population_count": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "episodic_winner_budget": { "type": "integer", "minimum": 0, "maximum": 25 },
+        "episodic_winner_bytes": { "type": "integer", "minimum": 0, "maximum": 268435456 },
+        "semantic_count_budget": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "semantic_body_bytes": { "type": "integer", "minimum": 0, "maximum": 8388608 },
+        "semantic_decisions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/semanticCandidateDecision" }
+        },
+        "semantic_atoms": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/plannedSemanticAtom" }
+        },
+        "episodic_winners": {
+          "type": "array",
+          "maxItems": 25,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/digest" }
+        },
+        "decisions": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": { "$ref": "#/$defs/retirementDecision" }
+        },
+        "projected_post_state": { "$ref": "#/$defs/retirementPostState" },
+        "projected_state_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "spontaneousRecallRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seed", "budget"],
+      "properties": {
+        "seed": { "$ref": "#/$defs/digest" },
+        "budget": { "type": "integer", "minimum": 1, "maximum": 3 }
+      }
+    },
+    "retrievalQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version", "memory_space_id", "repository_id", "memory_space_wide", "as_of_us",
+        "terms", "topic_keys", "entity_ids", "k", "spontaneous"
+      ],
+      "properties": {
+        "contract_version": { "const": "retrieval-query-v1" },
+        "memory_space_id": { "type": "string", "minLength": 1 },
+        "repository_id": { "$ref": "#/$defs/nullableString" },
+        "memory_space_wide": { "type": "boolean" },
+        "as_of_us": { "$ref": "#/$defs/u64" },
+        "terms": { "$ref": "#/$defs/stringArray" },
+        "topic_keys": { "$ref": "#/$defs/stringSet" },
+        "entity_ids": { "$ref": "#/$defs/stringSet" },
+        "k": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "integer", "minimum": 0, "maximum": 100 }
+          ]
+        },
+        "spontaneous": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/spontaneousRecallRequest" }
+          ]
+        }
+      }
+    },
+    "retrievalScore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lexical", "semantic", "entity", "validated_utility", "recency", "total"],
+      "properties": {
+        "lexical": { "$ref": "#/$defs/ppm" },
+        "semantic": { "$ref": "#/$defs/ppm" },
+        "entity": { "$ref": "#/$defs/ppm" },
+        "validated_utility": { "$ref": "#/$defs/ppm" },
+        "recency": { "$ref": "#/$defs/ppm" },
+        "total": { "$ref": "#/$defs/ppm" }
+      }
+    },
+    "retrievalHit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["atom_id", "score", "recall_reason", "generality"],
+      "properties": {
+        "atom_id": { "$ref": "#/$defs/digest" },
+        "score": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/retrievalScore" }
+          ]
+        },
+        "recall_reason": { "enum": ["query_ranked", "spontaneous"] },
+        "generality": { "enum": ["semantic", "single_episode"] }
+      }
+    },
+    "spontaneousRecallResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seed", "budget", "population_digest", "population_count", "hits"],
+      "properties": {
+        "seed": { "$ref": "#/$defs/digest" },
+        "budget": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "population_digest": { "$ref": "#/$defs/digest" },
+        "population_count": { "$ref": "#/$defs/usize" },
+        "hits": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/retrievalHit" }
+        }
+      }
+    },
+    "retrievalResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "query_digest", "hits", "spontaneous"],
+      "properties": {
+        "contract_version": { "const": "retrieval-result-v1" },
+        "query_digest": { "$ref": "#/$defs/digest" },
+        "hits": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/retrievalHit" }
+        },
+        "spontaneous": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/spontaneousRecallResult" }
+          ]
+        }
+      }
+    },
+    "digestArrayMap": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/digest" },
+      "additionalProperties": { "$ref": "#/$defs/digestArray" }
+    },
+    "receiptVerificationInputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy", "snapshot", "seed", "observed_state_digest", "observed_exact_artifact_digests"
+      ],
+      "properties": {
+        "policy": { "$ref": "#/$defs/policy" },
+        "snapshot": { "$ref": "#/$defs/retirementSnapshot" },
+        "seed": { "$ref": "#/$defs/digest" },
+        "observed_state_digest": { "$ref": "#/$defs/digest" },
+        "observed_exact_artifact_digests": { "$ref": "#/$defs/digestArrayMap" }
+      }
+    },
+    "verifiedReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_id", "run_id", "plan_digest", "status"],
+      "properties": {
+        "receipt_id": { "$ref": "#/$defs/digest" },
+        "run_id": { "$ref": "#/$defs/digest" },
+        "plan_digest": { "$ref": "#/$defs/digest" },
+        "status": { "enum": ["verified", "rejected", "inconclusive"] }
+      }
+    }
+  }
+}

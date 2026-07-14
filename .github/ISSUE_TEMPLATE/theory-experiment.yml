@@ -1,0 +1,57 @@
+name: Theory or experiment proposal
+description: Propose a claim, policy, dataset, or validation change
+title: "[theory]: "
+labels: ["area:theory"]
+body:
+  - type: textarea
+    id: claim
+    attributes:
+      label: Claim and non-claims
+      description: State a falsifiable claim and what it would not establish.
+    validations:
+      required: true
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Rationale
+    validations:
+      required: true
+  - type: dropdown
+    id: dataset
+    attributes:
+      label: Dataset stage
+      options:
+        - Golden or adversarial fixture
+        - Calibration only
+        - New preregistered holdout
+        - Existing frozen holdout (no tuning)
+        - Scale envelope
+    validations:
+      required: true
+  - type: textarea
+    id: protocol
+    attributes:
+      label: Preregistered protocol
+      description: Include metrics, thresholds, sample unit, seeds, byte-budget parity, and failure interpretation.
+    validations:
+      required: true
+  - type: textarea
+    id: policy
+    attributes:
+      label: Proposed policy or schema changes
+      description: Identify versioning, migration, golden-vector, and replay consequences.
+  - type: textarea
+    id: adversarial
+    attributes:
+      label: Negative and adversarial cases
+    validations:
+      required: true
+  - type: checkboxes
+    id: declarations
+    attributes:
+      label: Declarations
+      options:
+        - label: The proposal uses only synthetic, non-sensitive data.
+          required: true
+        - label: I will not tune against a holdout after inspecting its outcomes.
+          required: true

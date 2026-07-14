@@ -1,0 +1,24 @@
+{
+  "milestone": {
+    "title": "Memory PoC v0.1",
+    "description": "A deterministic, receipt-backed local memory proof of concept.",
+    "state": "open"
+  },
+  "labels": [
+    { "name": "area:core", "color": "1d76db", "description": "Pure domain and decision core" },
+    { "name": "area:store", "color": "0e8a16", "description": "SQLite and artifact persistence" },
+    { "name": "area:lab", "color": "5319e7", "description": "Synthetic worlds and proof harness" },
+    { "name": "area:governance", "color": "c5def5", "description": "Repository governance and automation" },
+    { "name": "area:theory", "color": "fbca04", "description": "Theory contract, policy, and experiments" },
+    { "name": "area:security", "color": "b60205", "description": "Security and integrity boundaries" },
+    { "name": "area:supply-chain", "color": "d4c5f9", "description": "Dependencies, licenses, and provenance" },
+    { "name": "type:bug", "color": "d73a4a", "description": "Reproducible defect" }
+  ],
+  "issues": [
+    { "title": "Slice 1: Freeze theory and implement deterministic core", "labels": ["area:core", "area:theory"] },
+    { "title": "Slice 2: Implement episode store and content-addressed artifacts", "labels": ["area:store", "area:security"] },
+    { "title": "Slice 3: Implement consolidation, lottery, retrieval, and feedback", "labels": ["area:core", "area:theory"] },
+    { "title": "Slice 4: Complete receipt, differential, crash, tamper, and scale proofs", "labels": ["area:lab", "area:security"] },
+    { "title": "Slice 5: Harden coverage, mutation, fuzzing, SBOM, and v0.1.0 release", "labels": ["area:governance", "area:supply-chain", "area:security"] }
+  ]
+}

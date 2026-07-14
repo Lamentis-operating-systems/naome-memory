@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/proof-receipt-v1.schema.json",
+  "title": "NAOME Memory Core Retirement Proof Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version", "receipt_id", "run_id", "memory_space_id", "cohort_day", "as_of_us",
+    "policy_id", "policy_digest", "seed", "input_set_digest", "rng_identifier",
+    "population_digest", "episodic_population_count", "episodic_winner_budget",
+    "episodic_winner_bytes", "semantic_count_budget", "semantic_body_bytes", "plan_digest",
+    "decision_digest", "state_digest", "closure", "invariants", "overall_status"
+  ],
+  "properties": {
+    "contract_version": { "const": "proof-receipt-v1" },
+    "receipt_id": { "$ref": "#/$defs/digest" },
+    "run_id": { "$ref": "#/$defs/digest" },
+    "memory_space_id": { "type": "string", "minLength": 1 },
+    "cohort_day": { "type": "integer", "minimum": 0 },
+    "as_of_us": { "type": "integer", "minimum": 0 },
+    "policy_id": { "const": "poc-v1" },
+    "policy_digest": { "$ref": "#/$defs/digest" },
+    "seed": { "$ref": "#/$defs/digest" },
+    "input_set_digest": { "$ref": "#/$defs/digest" },
+    "rng_identifier": { "const": "chacha20-rand_chacha-0.3/partial-fisher-yates-v1" },
+    "population_digest": { "$ref": "#/$defs/digest" },
+    "episodic_population_count": { "type": "integer", "minimum": 0, "maximum": 100000 },
+    "episodic_winner_budget": { "type": "integer", "minimum": 0, "maximum": 25 },
+    "episodic_winner_bytes": { "type": "integer", "minimum": 0, "maximum": 268435456 },
+    "semantic_count_budget": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "semantic_body_bytes": { "type": "integer", "minimum": 0, "maximum": 8388608 },
+    "plan_digest": { "$ref": "#/$defs/digest" },
+    "decision_digest": { "$ref": "#/$defs/digest" },
+    "state_digest": { "$ref": "#/$defs/digest" },
+    "closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_atom_ids", "semantic_atom_ids", "exact_episode_ids", "exact_artifact_digests"],
+      "properties": {
+        "source_atom_ids": { "$ref": "#/$defs/digestArray" },
+        "semantic_atom_ids": { "$ref": "#/$defs/digestArray" },
+        "exact_episode_ids": { "$ref": "#/$defs/digestArray" },
+        "exact_artifact_digests": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[0-9a-f]{64}$" },
+          "additionalProperties": { "$ref": "#/$defs/digestArray" }
+        }
+      }
+    },
+    "invariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "budgets_structurally_bounded",
+        "plan_structure_verified",
+        "repository_outcome_closure_verified"
+      ],
+      "properties": {
+        "budgets_structurally_bounded": { "const": "verified" },
+        "plan_structure_verified": { "const": "verified" },
+        "repository_outcome_closure_verified": { "const": "verified" }
+      }
+    },
+    "overall_status": { "enum": ["passed", "failed", "inconclusive", "invalid"] }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "digestArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/digest" }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+[alias]
+xtask = "run --package xtask --"
+
+[build]
+incremental = true
+
+[term]
+color = "always"

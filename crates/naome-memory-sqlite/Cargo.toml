@@ -1,0 +1,33 @@
+[package]
+name = "naome-memory-sqlite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fail-closed SQLite and content-addressed artifact store for NAOME Memory"
+publish = false
+
+[features]
+default = []
+lab-fault-injection = []
+
+[dependencies]
+hex.workspace = true
+naome-memory-core = { path = "../naome-memory-core" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"
+nursery = "deny"

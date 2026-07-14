@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/lab-proof-receipt-v1.schema.json",
+  "title": "NAOME Memory Lab Experiment Proof Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version", "profile", "dataset_id", "policy_digest", "dataset_manifest_digest",
+    "generator_source_digest", "world_count", "invariant_statuses", "hypothesis_statuses", "metrics",
+    "golden_fate_digest", "crash_campaign_digest", "decision_ledger_digest", "result_digest", "overall_status"
+  ],
+  "properties": {
+    "contract_version": { "const": "lab-proof-receipt-v1" },
+    "profile": { "enum": ["pr", "deep"] },
+    "dataset_id": { "enum": ["calibration-v1", "holdout-v1"] },
+    "policy_digest": { "$ref": "#/$defs/digest" },
+    "dataset_manifest_digest": { "$ref": "#/$defs/digest" },
+    "generator_source_digest": { "$ref": "#/$defs/digest" },
+    "world_count": { "enum": [40, 100] },
+    "invariant_statuses": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "apply_atomic_and_idempotent",
+        "budgets_respected",
+        "deterministic_replay",
+        "episode_generality_preserved",
+        "episodic_exactness",
+        "golden_four_fates",
+        "memory_space_isolation",
+        "receipt_closure",
+        "sealed_atom_immutability",
+        "semantic_provenance",
+        "separate_flashback_channel",
+        "tamper_fail_closed"
+      ],
+      "properties": {
+        "apply_atomic_and_idempotent": { "$ref": "#/$defs/claimStatus" },
+        "budgets_respected": { "$ref": "#/$defs/claimStatus" },
+        "deterministic_replay": { "$ref": "#/$defs/claimStatus" },
+        "episode_generality_preserved": { "$ref": "#/$defs/claimStatus" },
+        "episodic_exactness": { "$ref": "#/$defs/claimStatus" },
+        "golden_four_fates": { "$ref": "#/$defs/claimStatus" },
+        "memory_space_isolation": { "$ref": "#/$defs/claimStatus" },
+        "receipt_closure": { "$ref": "#/$defs/claimStatus" },
+        "sealed_atom_immutability": { "$ref": "#/$defs/claimStatus" },
+        "semantic_provenance": { "$ref": "#/$defs/claimStatus" },
+        "separate_flashback_channel": { "$ref": "#/$defs/claimStatus" },
+        "tamper_fail_closed": { "$ref": "#/$defs/claimStatus" }
+      }
+    },
+    "hypothesis_statuses": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["semantic_utility", "episodic_rare_recovery", "ordinary_utility_preserved"],
+      "properties": {
+        "semantic_utility": { "$ref": "#/$defs/hypothesisStatus" },
+        "episodic_rare_recovery": { "$ref": "#/$defs/hypothesisStatus" },
+        "ordinary_utility_preserved": { "$ref": "#/$defs/hypothesisStatus" }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["semantic_utility", "episodic_rare_recovery", "ordinary_utility_preserved"],
+      "properties": {
+        "semantic_utility": { "$ref": "#/$defs/metric" },
+        "episodic_rare_recovery": { "$ref": "#/$defs/metric" },
+        "ordinary_utility_preserved": { "$ref": "#/$defs/metric" }
+      }
+    },
+    "golden_fate_digest": { "$ref": "#/$defs/digest" },
+    "crash_campaign_digest": {
+      "oneOf": [
+        { "$ref": "#/$defs/digest" },
+        { "type": "null" }
+      ]
+    },
+    "decision_ledger_digest": { "$ref": "#/$defs/digest" },
+    "result_digest": { "$ref": "#/$defs/digest" },
+    "overall_status": { "enum": ["passed", "failed", "inconclusive", "invalid"] }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "signedPpm": { "type": "integer", "minimum": -1000000, "maximum": 1000000 },
+    "claimStatus": { "enum": ["verified", "rejected", "inconclusive"] },
+    "hypothesisStatus": { "enum": ["supported", "rejected", "inconclusive"] },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["estimate_ppm", "lower_95_ci_ppm", "threshold_ppm", "sample_count", "comparator"],
+      "properties": {
+        "estimate_ppm": { "$ref": "#/$defs/signedPpm" },
+        "lower_95_ci_ppm": { "$ref": "#/$defs/signedPpm" },
+        "threshold_ppm": { "$ref": "#/$defs/signedPpm" },
+        "sample_count": { "type": "integer", "minimum": 1 },
+        "comparator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["comparison_id", "left_model", "right_model", "shared_budget_bytes_total", "left_used_bytes_total", "right_used_bytes_total", "all_samples_within_shared_budget", "selection_rule"],
+          "properties": {
+            "comparison_id": { "type": "string", "minLength": 1 },
+            "left_model": { "type": "string", "minLength": 1 },
+            "right_model": { "type": "string", "minLength": 1 },
+            "shared_budget_bytes_total": { "type": "integer", "minimum": 0 },
+            "left_used_bytes_total": { "type": "integer", "minimum": 0 },
+            "right_used_bytes_total": { "type": "integer", "minimum": 0 },
+            "all_samples_within_shared_budget": { "type": "boolean" },
+            "selection_rule": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

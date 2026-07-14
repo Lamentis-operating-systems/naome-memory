@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Lamentis-operating-systems/naome-memory/raw/main/schemas/cli-response-v1.schema.json",
+  "title": "NAOME Memory CLI response v1",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" },
+    { "$ref": "#/$defs/help" }
+  ],
+  "$defs": {
+    "contract": { "const": "naome-memory.cli-response.v1" },
+    "success": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "command", "status", "result"],
+      "properties": {
+        "contract_version": { "$ref": "#/$defs/contract" },
+        "command": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["succeeded", "rejected"] },
+        "result": true
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "status", "exit_code", "error"],
+      "properties": {
+        "contract_version": { "$ref": "#/$defs/contract" },
+        "status": { "const": "error" },
+        "exit_code": { "type": "integer", "minimum": 2, "maximum": 6 },
+        "error": { "type": "string" }
+      }
+    },
+    "help": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "status", "exit_code", "output"],
+      "properties": {
+        "contract_version": { "$ref": "#/$defs/contract" },
+        "status": { "const": "help" },
+        "exit_code": { "const": 0 },
+        "output": { "type": "string" }
+      }
+    }
+  }
+}

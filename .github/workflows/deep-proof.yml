@@ -1,0 +1,112 @@
+name: Deep Proof
+
+on:
+  schedule:
+    - cron: "17 02 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deep-proof-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  proof:
+    name: Deep property, differential, crash, tamper, and hypothesis proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Run core unit and golden tests
+        run: cargo +1.95.0 test --release --locked --all-features -p naome-memory-core
+      - name: Run 20000-case property campaign
+        env:
+          NAOME_MEMORY_PROPERTY_CASES: "20000"
+        run: cargo +1.95.0 test --release --locked --all-features -p naome-memory-lab --test campaigns deterministic_property_campaign -- --exact --nocapture
+      - name: Run 10000-world independent differential campaign
+        env:
+          NAOME_MEMORY_DIFFERENTIAL_WORLDS: "10000"
+        run: cargo +1.95.0 test --release --locked --all-features -p naome-memory-lab --test campaigns slow_independent_differential_campaign -- --exact --nocapture
+      - name: Run real child-process crash campaign
+        run: cargo +1.95.0 test --release --locked --all-features -p naome-memory-sqlite --test crash_atomicity -- --nocapture
+      - name: Run SQLite integrity, scope, and tamper campaign
+        run: cargo +1.95.0 test --release --locked --all-features -p naome-memory-sqlite --test integrity_and_scope -- --nocapture
+      - name: Produce deep theory receipt
+        run: cargo +1.95.0 run --locked -p xtask -- proof --profile deep --output target/proofs/deep-receipt.json
+      - name: Install pinned Draft 2020-12 validator
+        run: python3 -m pip install --disable-pip-version-check --no-input --requirement .github/schema-requirements.txt
+      - name: Validate deep receipt, ledger, manifest, and committed schemas
+        run: >-
+          python3 scripts/validate_json_schemas.py
+          --bind schemas/lab-proof-receipt-v1.schema.json=target/proofs/deep-receipt.json
+          --bind schemas/decision-ledger-v1.schema.json=target/proofs/decision-ledger.json
+      - name: Replay proof twice
+        run: cargo +1.95.0 run --locked -p xtask -- replay --receipt target/proofs/deep-receipt.json --repetitions 2
+      - name: Upload deep proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: deep-proof-${{ github.sha }}
+          path: target/proofs/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Require supported frozen-holdout claims
+        run: cargo +1.95.0 run --locked -p xtask -- assert-claims --receipt target/proofs/deep-receipt.json
+
+  scale:
+    name: 100000-atom envelope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Run scale envelope
+        run: cargo +1.95.0 run --release --locked -p xtask -- scale --atoms 100000
+      - name: Install pinned Draft 2020-12 validator
+        run: python3 -m pip install --disable-pip-version-check --no-input --requirement .github/schema-requirements.txt
+      - name: Validate core retirement receipt
+        run: >-
+          python3 scripts/validate_json_schemas.py
+          --bind schemas/scale-receipt-v1.schema.json=target/proofs/scale-receipt.json
+          --bind schemas/proof-receipt-v1.schema.json=target/proofs/scale-core-retirement-receipt.json
+      - name: Upload scale receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scale-proof-${{ github.sha }}
+          path: target/proofs/
+          if-no-files-found: error
+          retention-days: 30
+
+  fuzz:
+    name: four-target bounded fuzz campaign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable and pinned nightly Rust toolchains
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup toolchain install nightly-2026-07-01 --profile minimal
+      - name: Install pinned fuzz tool
+        run: cargo +1.95.0 install --locked cargo-fuzz --version 0.13.2
+      - name: Fuzz decoder, canonical encoding, receipt verifier, and SQLite ingest
+        run: cargo +1.95.0 run --locked -p xtask -- fuzz --seconds 120
+      - name: Upload fuzz evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-proof-${{ github.sha }}
+          path: target/proofs/
+          if-no-files-found: error
+          retention-days: 30

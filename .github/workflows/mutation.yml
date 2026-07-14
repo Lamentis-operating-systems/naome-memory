@@ -1,0 +1,36 @@
+name: Mutation
+
+on:
+  schedule:
+    - cron: "17 03 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  decision-core:
+    name: Decision core and verifier
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Install pinned mutation tool
+        run: cargo +1.95.0 install --locked cargo-mutants --version 27.1.0
+      - name: Run mutation gate
+        run: cargo +1.95.0 run --locked -p xtask -- mutation
+      - name: Upload mutation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-proof-${{ github.sha }}
+          path: target/proofs/
+          if-no-files-found: error
+          retention-days: 30

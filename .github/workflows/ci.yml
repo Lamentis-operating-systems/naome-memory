@@ -1,0 +1,277 @@
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  hygiene:
+    name: hygiene
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component clippy,llvm-tools-preview,rustfmt
+      - name: Verify formatting
+        run: cargo +1.95.0 fmt --all -- --check
+      - name: Verify Clippy
+        run: cargo +1.95.0 clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Verify rustdoc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo +1.95.0 doc --workspace --all-features --no-deps --locked
+      - name: Verify lockfile resolution
+        run: cargo +1.95.0 metadata --locked --format-version 1 > /dev/null
+      - name: Verify generated cleanliness
+        run: git diff --exit-code
+
+  unit-model:
+    name: unit-model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Run unit, golden, property, and differential tests
+        env:
+          NAOME_MEMORY_PROPERTY_CASES: "2048"
+          NAOME_MEMORY_DIFFERENTIAL_WORLDS: "1000"
+        run: cargo +1.95.0 test --locked --all-features -p naome-memory-core -p naome-memory-lab -p naome-memory-cli
+      - name: Install pinned Draft 2020-12 validator
+        run: python3 -m pip install --disable-pip-version-check --no-input --requirement .github/schema-requirements.txt
+      - name: Produce actual JSON help, success, and error outputs
+        run: |
+          mkdir -p target/cli-contract
+          cargo +1.95.0 run --quiet --locked -p naome-memory-cli -- --json --help > target/cli-help.json
+          cargo +1.95.0 run --quiet --locked -p naome-memory-cli -- \
+            --json db init \
+            --database target/cli-contract/memory.db \
+            --artifacts target/cli-contract/artifacts \
+            --as-of-us 1 > target/cli-success.json
+          set +e
+          cargo +1.95.0 run --quiet --locked -p naome-memory-cli -- \
+            --json not-a-command > target/cli-error.json
+          status=$?
+          set -e
+          test "$status" = 2
+      - name: Generate typed public-contract fixtures
+        run: cargo +1.95.0 run --quiet --locked -p xtask -- schema-fixtures --output-dir target/schema-fixtures
+      - name: Validate actual JSON outputs and typed public contracts
+        run: >-
+          python3 scripts/validate_json_schemas.py
+          --require-typed-fixtures
+          --bindings-manifest target/schema-fixtures/bindings-v1.json
+          --bind schemas/cli-response-v1.schema.json=target/cli-help.json
+          --bind schemas/cli-response-v1.schema.json=target/cli-success.json
+          --bind schemas/cli-response-v1.schema.json=target/cli-error.json
+
+  sqlite-integrity:
+    name: sqlite-integrity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Run migration, FK, crash, retry, and tamper tests
+        run: cargo +1.95.0 test --locked --all-features -p naome-memory-sqlite
+
+  scale-pr:
+    name: 5000-atom full-path envelope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Persist, plan, replay, apply, verify, and retrieve 5000 atoms
+        run: cargo +1.95.0 run --release --locked -p xtask -- scale --atoms 5000
+      - name: Install pinned Draft 2020-12 validator
+        run: python3 -m pip install --disable-pip-version-check --no-input --requirement .github/schema-requirements.txt
+      - name: Validate core receipt projection
+        run: >-
+          python3 scripts/validate_json_schemas.py
+          --bind schemas/scale-receipt-v1.schema.json=target/proofs/scale-receipt.json
+          --bind schemas/proof-receipt-v1.schema.json=target/proofs/scale-core-retirement-receipt.json
+      - name: Upload scale receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-scale-${{ github.sha }}
+          path: target/proofs/
+          if-no-files-found: error
+          retention-days: 14
+
+  proof-merge:
+    name: proof-merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Produce PR proof receipt
+        run: cargo +1.95.0 run --locked -p xtask -- proof --profile pr --output target/proofs/pr-receipt.json
+      - name: Install pinned Draft 2020-12 validator
+        run: python3 -m pip install --disable-pip-version-check --no-input --requirement .github/schema-requirements.txt
+      - name: Validate lab receipt, ledger, manifest, and committed schemas
+        run: >-
+          python3 scripts/validate_json_schemas.py
+          --bind schemas/lab-proof-receipt-v1.schema.json=target/proofs/pr-receipt.json
+          --bind schemas/decision-ledger-v1.schema.json=target/proofs/decision-ledger.json
+      - name: Verify and replay twice
+        run: cargo +1.95.0 run --locked -p xtask -- replay --receipt target/proofs/pr-receipt.json --repetitions 2
+      - name: Upload proof closure
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-proof-${{ github.sha }}
+          path: target/proofs/
+          if-no-files-found: error
+          retention-days: 14
+
+  platform-replay:
+    name: platform-replay (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-24.04
+            architecture: x86_64
+          - platform: macos-arm64
+            os: macos-14
+            architecture: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Require declared runner architecture
+        run: test "$(uname -m)" = "${{ matrix.architecture }}"
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Compute logical digest
+        run: |
+          mkdir -p target/proofs
+          cargo +1.95.0 run --quiet --locked -p xtask -- platform-digest > target/proofs/platform-digest.txt
+      - name: Upload logical digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: platform-digest-${{ matrix.platform }}
+          path: target/proofs/platform-digest.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  platform-compare:
+    name: platform-compare
+    needs: [platform-replay]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download Linux digest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: platform-digest-linux-x86_64
+          path: target/platform-digests/linux
+      - name: Download macOS digest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: platform-digest-macos-arm64
+          path: target/platform-digests/macos
+      - name: Require identical logical digests
+        run: cmp target/platform-digests/linux/platform-digest.txt target/platform-digests/macos/platform-digest.txt
+
+  supply-chain:
+    name: supply-chain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Install pinned audit tools
+        run: |
+          cargo +1.95.0 install --locked cargo-audit --version 0.22.2
+          cargo +1.95.0 install --locked cargo-deny --version 0.20.2
+      - name: Audit advisories
+        run: |
+          cargo +1.95.0 audit
+          cargo +1.95.0 audit --file fuzz/Cargo.lock
+      - name: Enforce license, source, advisory, and ban policy
+        run: |
+          cargo +1.95.0 deny --locked check
+          cargo +1.95.0 deny --manifest-path fuzz/Cargo.toml --locked check
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component llvm-tools-preview
+      - name: Install pinned coverage tool
+        run: cargo +1.95.0 install --locked cargo-llvm-cov --version 0.8.7
+      - name: Enforce 80 percent workspace line coverage
+        run: cargo +1.95.0 llvm-cov --workspace --all-features --locked --fail-under-lines 80 --lcov --output-path target/coverage/workspace.lcov
+      - name: Enforce 90 percent core and verifier line coverage
+        run: cargo +1.95.0 llvm-cov -p naome-memory-core --all-features --locked --fail-under-lines 90 --lcov --output-path target/coverage/core.lcov
+      - name: Upload coverage evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-${{ github.sha }}
+          path: target/coverage/
+          if-no-files-found: error
+          retention-days: 14
+
+  required:
+    # This literal job name is the required-check context committed in the
+    # repository ruleset. Keep it stable across workflow refactors.
+    name: CI / required
+    if: ${{ always() }}
+    needs:
+      - hygiene
+      - unit-model
+      - sqlite-integrity
+      - scale-pr
+      - proof-merge
+      - platform-compare
+      - supply-chain
+      - coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every CI gate
+        env:
+          HYGIENE: ${{ needs.hygiene.result }}
+          UNIT_MODEL: ${{ needs.unit-model.result }}
+          SQLITE_INTEGRITY: ${{ needs.sqlite-integrity.result }}
+          SCALE_PR: ${{ needs.scale-pr.result }}
+          PROOF_MERGE: ${{ needs.proof-merge.result }}
+          PLATFORM_COMPARE: ${{ needs.platform-compare.result }}
+          SUPPLY_CHAIN: ${{ needs.supply-chain.result }}
+          COVERAGE: ${{ needs.coverage.result }}
+        run: |
+          for result in "$HYGIENE" "$UNIT_MODEL" "$SQLITE_INTEGRITY" "$SCALE_PR" "$PROOF_MERGE" "$PLATFORM_COMPARE" "$SUPPLY_CHAIN" "$COVERAGE"; do
+            test "$result" = success
+          done

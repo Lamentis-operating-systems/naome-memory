@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a reproducible defect using synthetic data
+title: "[bug]: "
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include real memory data, credentials, or vulnerability details. Use Private Vulnerability Reporting for security issues.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or full commit SHA
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and Rust version
+      placeholder: macOS arm64, rustc 1.95.0
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed and expected behavior
+      description: Explain the observable difference and why it violates a documented contract.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal synthetic reproduction
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: policy
+    attributes:
+      label: Policy ID and digest
+    validations:
+      required: true
+  - type: input
+    id: seed
+    attributes:
+      label: Explicit seed, if applicable
+  - type: input
+    id: receipt
+    attributes:
+      label: Receipt digest or artifact link
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Non-sensitive diagnostics
+      description: Remove host paths, credentials, and real memory contents.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data declaration
+      options:
+        - label: This report contains synthetic, non-sensitive data only.
+          required: true
