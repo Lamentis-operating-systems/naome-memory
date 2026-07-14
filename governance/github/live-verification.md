@@ -33,6 +33,11 @@ The first two complete pull-request gate chains were
 and [`#12`](https://github.com/Lamentis-operating-systems/naome-memory/pull/12).
 Both completed every repository check successfully before squash merge.
 
-The probe branch carrying this file is also used to verify that direct updates
-to `main` are rejected. Rejection results are recorded in a follow-up commit
-before the probe pull request is merged.
+The probe commit carrying this file was pushed directly to `main` and GitHub
+rejected it with `GH013`. The response required a pull request, reported all
+five expected status checks, and required CodeQL results for the probe commit.
+
+The effective-rules API for `main` reports both `non_fast_forward` and
+`deletion` from ruleset `18954445`. Destructive force-push and default-branch
+deletion mutations were not executed as probes; their live enforcement is
+therefore verified as configured state, not as a destructive rejection test.
