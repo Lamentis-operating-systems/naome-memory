@@ -6,10 +6,11 @@ use anyhow::{Context as _, Result, ensure};
 use clap::{Parser, Subcommand};
 use naome_memory_core::{
     ATOM_HASH_DOMAIN, ApplyRetirementOutcomeV1, AtomStateV1, CanonicalBytes as _, ContentStatusV1,
-    Digest32, GeneralityV1, MemoryAtomBodyV1, PolicyV1, ProofReceiptV1, RecallReasonV1,
-    ReceiptClosureV1, ReceiptVerificationInputsV1, RetentionPermissionV1, RetentionTierV1,
-    RetirementPlanV1, RetirementRepositoryV1, RetrievalQueryV1, Seed32, SpontaneousRecallRequestV1,
-    apply_retirement, plan_retirement, rank_retrieval, verify_receipt,
+    Digest32, GeneralityV1, InvariantStatusV1, MemoryAtomBodyV1, OverallProofStatusV1, PolicyV1,
+    ProofReceiptV1, RecallReasonV1, ReceiptClosureV1, ReceiptVerificationInputsV1,
+    RetentionPermissionV1, RetentionTierV1, RetirementPlanV1, RetirementRepositoryV1,
+    RetrievalQueryV1, Seed32, SpontaneousRecallRequestV1, apply_retirement, plan_retirement,
+    rank_retrieval, verify_receipt,
 };
 use naome_memory_lab::{
     ClaimStatusV1, CrashCampaignEvidenceV1, DecisionLedgerV1, HypothesisStatusV1, LabProofBundleV1,
@@ -30,6 +31,12 @@ use std::time::{Duration, Instant};
 use naome_memory_sqlite::{CohortKey, MAX_ATOM_INSERT_BATCH, SqliteRepository, StoreConfig};
 
 const PROOF_DIR: &str = "target/proofs";
+const SCALE_RECEIPT_FILE: &str = "scale-receipt.json";
+const SCALE_CORE_RECEIPT_FILE: &str = "scale-core-retirement-receipt.json";
+const DEEP_SCALE_ATOM_COUNT: usize = 100_000;
+const SCALE_MAX_WALL_MILLIS: u64 = 1_800_000;
+const SCALE_MAX_RSS_BYTES: u64 = 6 * 1024 * 1024 * 1024;
+const SCALE_MAX_DISK_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const MUTATION_TOOL_VERSION: &str = "27.1.0";
 const FUZZ_TOOL_VERSION: &str = "0.13.2";
 const FUZZ_NIGHTLY: &str = "nightly-2026-07-01";
@@ -334,9 +341,11 @@ fn scale_with_output(atoms: usize, proof_directory: &Path) -> Result<()> {
         "representative scale proof requires at least 100 atoms"
     );
     ensure!(
-        atoms <= 100_000,
+        atoms <= DEEP_SCALE_ATOM_COUNT,
         "atom count exceeds the 100,000-atom PoC envelope"
     );
+    clear_scale_evidence(proof_directory)?;
+    let source_commit_at_start = current_clean_source_commit();
     let started = Instant::now();
     let temporary = tempfile::tempdir()?;
     let database = temporary.path().join("scale.db");
@@ -490,22 +499,34 @@ fn scale_with_output(atoms: usize, proof_directory: &Path) -> Result<()> {
     phases.insert("integrity".to_owned(), elapsed_millis(phase_started));
     drop(repository);
 
-    let observed_wall_millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let observed_disk_bytes = directory_bytes(temporary.path()).ok();
     let observed_max_rss_bytes = rss_sampler.finish();
-    let observed_disk_bytes = directory_bytes(temporary.path())?;
+    let observed_wall_millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let source_commit_at_publication = current_clean_source_commit();
+    let source_binding_complete = scale_source_binding_complete(
+        source_commit_at_start.as_deref(),
+        source_commit_at_publication.as_deref(),
+    );
+    let source_commit = if source_binding_complete {
+        source_commit_at_start
+            .clone()
+            .unwrap_or_else(|| "uncommitted".to_owned())
+    } else {
+        "uncommitted".to_owned()
+    };
     logical.sizes.sort_unstable();
     let p50 = percentile(&logical.sizes, 50)?;
     let p95 = percentile(&logical.sizes, 95)?;
     let maximum = *logical.sizes.last().context("scale size set is empty")?;
     let distribution_matches = p50 == 16 * 1024 && p95 == 64 * 1024 && maximum == 256 * 1024;
-    let within_resource_envelope = atoms != 100_000
-        || (observed_wall_millis <= 1_800_000
-            && observed_max_rss_bytes.is_some_and(|value| value <= 6 * 1024 * 1024 * 1024)
-            && observed_disk_bytes <= 10 * 1024 * 1024 * 1024);
-    let within_envelope = distribution_matches
-        && within_resource_envelope
-        && observed_wall_millis <= 1_800_000
-        && (atoms != 100_000 || observed_max_rss_bytes.is_some());
+    let evidence_status = classify_scale_evidence(
+        atoms,
+        distribution_matches,
+        observed_wall_millis,
+        observed_max_rss_bytes,
+        observed_disk_bytes,
+        source_binding_complete,
+    );
     let plan_digest = plan.digest()?;
     let logical_closure = ScaleLogicalClosureV1 {
         contract_version: "scale-logical-closure-v1",
@@ -526,12 +547,8 @@ fn scale_with_output(atoms: usize, proof_directory: &Path) -> Result<()> {
     );
     let mut report = ScaleReceiptV1 {
         contract_version: "scale-receipt-v1".to_owned(),
-        source_commit: current_source_commit().unwrap_or_else(|_| "uncommitted".to_owned()),
-        status: if within_envelope {
-            EvidenceStatusV1::Passed
-        } else {
-            EvidenceStatusV1::Failed
-        },
+        source_commit,
+        status: evidence_status,
         atom_count: atoms,
         p50_body_bytes: p50,
         p95_body_bytes: p95,
@@ -553,22 +570,110 @@ fn scale_with_output(atoms: usize, proof_directory: &Path) -> Result<()> {
         observed_phase_millis: phases,
         observed_wall_millis,
         observed_max_rss_bytes,
-        observed_disk_bytes: Some(observed_disk_bytes),
-        note: "Phase timing, sampled peak RSS, and persisted temporary-directory bytes are observational fields excluded from logical_digest.".to_owned(),
+        observed_disk_bytes,
+        note: format!(
+            "Phase timing, sampled peak RSS, persisted temporary-directory bytes, and source-binding stability are observational fields excluded from logical_digest. Missing required 100,000-atom resource measurements or source binding make evidence inconclusive; observed threshold breaches make it failed. source_binding_complete={source_binding_complete}."
+        ),
         evidence_digest: String::new(),
     };
     report.evidence_digest = report.recompute_evidence_digest()?;
-    verify_scale_receipt(&report, atoms)?;
-    write_json(
-        &proof_directory.join("scale-core-retirement-receipt.json"),
-        &applied_receipt,
-    )?;
-    let output = proof_directory.join("scale-receipt.json");
-    write_json(&output, &report)?;
-    println!("{}", serde_json::to_string(&report)?);
+    publish_and_verify_scale_evidence(proof_directory, &applied_receipt, &report, atoms)
+}
+
+fn classify_scale_evidence(
+    atoms: usize,
+    distribution_matches: bool,
+    observed_wall_millis: u64,
+    observed_max_rss_bytes: Option<u64>,
+    observed_disk_bytes: Option<u64>,
+    source_binding_complete: bool,
+) -> EvidenceStatusV1 {
+    let known_threshold_breach = !distribution_matches
+        || observed_wall_millis > SCALE_MAX_WALL_MILLIS
+        || (atoms == DEEP_SCALE_ATOM_COUNT
+            && (observed_max_rss_bytes.is_some_and(|bytes| bytes > SCALE_MAX_RSS_BYTES)
+                || observed_disk_bytes.is_some_and(|bytes| bytes > SCALE_MAX_DISK_BYTES)));
+    if known_threshold_breach {
+        return EvidenceStatusV1::Failed;
+    }
+    if atoms == DEEP_SCALE_ATOM_COUNT
+        && (observed_max_rss_bytes.is_none()
+            || observed_disk_bytes.is_none()
+            || !source_binding_complete)
+    {
+        return EvidenceStatusV1::Inconclusive;
+    }
+    EvidenceStatusV1::Passed
+}
+
+fn clear_scale_evidence(proof_directory: &Path) -> Result<()> {
+    for file_name in [SCALE_CORE_RECEIPT_FILE, SCALE_RECEIPT_FILE] {
+        let path = proof_directory.join(file_name);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("could not remove stale {}", path.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn publish_and_verify_scale_evidence(
+    proof_directory: &Path,
+    core_receipt: &ProofReceiptV1,
+    report: &ScaleReceiptV1,
+    expected_atoms: usize,
+) -> Result<()> {
+    verify_scale_core_binding(core_receipt, report)?;
+    verify_scale_receipt_structure(report, expected_atoms)?;
+    write_json(&proof_directory.join(SCALE_CORE_RECEIPT_FILE), core_receipt)?;
+    write_json(&proof_directory.join(SCALE_RECEIPT_FILE), report)?;
+    println!("{}", serde_json::to_string(report)?);
+    verify_scale_receipt(report, expected_atoms)
+}
+
+fn verify_scale_core_binding(core_receipt: &ProofReceiptV1, report: &ScaleReceiptV1) -> Result<()> {
     ensure!(
-        within_envelope,
-        "scale proof failed its logical, distribution, or 100,000-atom resource envelope"
+        core_receipt.contract_version == "proof-receipt-v1"
+            && core_receipt.receipt_id == core_receipt.recompute_receipt_id()?,
+        "scale core retirement receipt id does not close"
+    );
+    let report_receipt_digest = Digest32::from_str(&report.receipt_digest)?;
+    let report_input_set_digest = Digest32::from_str(&report.input_set_digest)?;
+    let report_plan_digest = Digest32::from_str(&report.plan_digest)?;
+    ensure!(
+        report_receipt_digest == core_receipt.receipt_id
+            && report_input_set_digest == core_receipt.input_set_digest
+            && report_plan_digest == core_receipt.plan_digest,
+        "scale report is not bound to the attached core retirement receipt"
+    );
+    ensure!(
+        core_receipt.closure.source_atom_ids.len() == report.atom_count
+            && core_receipt.closure.semantic_atom_ids.len() == report.semantic_atom_count
+            && core_receipt.closure.exact_episode_ids.len() == report.episodic_winner_count,
+        "scale report counts do not match the attached core retirement closure"
+    );
+    let required_invariants = BTreeMap::from([
+        (
+            "budgets_structurally_bounded".to_owned(),
+            InvariantStatusV1::Verified,
+        ),
+        (
+            "plan_structure_verified".to_owned(),
+            InvariantStatusV1::Verified,
+        ),
+        (
+            "repository_outcome_closure_verified".to_owned(),
+            InvariantStatusV1::Verified,
+        ),
+    ]);
+    ensure!(
+        core_receipt.overall_status == OverallProofStatusV1::Passed
+            && core_receipt.invariants == required_invariants,
+        "scale core retirement receipt does not claim the required verified invariants"
     );
     Ok(())
 }
@@ -873,6 +978,24 @@ fn current_source_commit() -> Result<String> {
     Ok(commit)
 }
 
+fn current_clean_source_commit() -> Option<String> {
+    let commit = current_source_commit().ok()?;
+    let status = ProcessCommand::new("git")
+        .current_dir(workspace_root())
+        .args(["status", "--porcelain", "--untracked-files=normal"])
+        .output()
+        .ok()?;
+    (status.status.success() && status.stdout.is_empty()).then_some(commit)
+}
+
+fn scale_source_binding_complete(start: Option<&str>, publication: Option<&str>) -> bool {
+    matches!(
+        (start, publication),
+        (Some(start), Some(publication))
+            if start == publication && valid_git_commit(start)
+    )
+}
+
 fn valid_git_commit(value: &str) -> bool {
     value.len() == 40
         && value
@@ -1063,11 +1186,7 @@ fn release_preflight(version: &str) -> Result<()> {
     let mutation: ToolReceiptV1 = read_json(&proof_dir.join("mutation-receipt.json"))?;
     let fuzz: ToolReceiptV1 = read_json(&proof_dir.join("fuzz-receipt.json"))?;
     verify_scale_receipt(&scale, 100_000)?;
-    ensure!(
-        scale_core.receipt_id == scale_core.recompute_receipt_id()?
-            && scale_core.receipt_id.to_hex() == scale.receipt_digest,
-        "scale receipt is not bound to the attached core retirement receipt"
-    );
+    verify_scale_core_binding(&scale_core, &scale)?;
     let source_commit = current_source_commit()?;
     ensure!(
         scale.source_commit == source_commit,
@@ -1143,20 +1262,33 @@ fn ensure_required_claims(receipt: &LabProofReceiptV1) -> Result<()> {
 }
 
 fn verify_scale_receipt(receipt: &ScaleReceiptV1, expected_atoms: usize) -> Result<()> {
+    verify_scale_receipt_structure(receipt, expected_atoms)?;
+    ensure!(
+        receipt.status == EvidenceStatusV1::Passed,
+        "scale evidence status {:?} is not passed (source={}, wall={}ms, rss={:?}, disk={:?})",
+        receipt.status,
+        receipt.source_commit,
+        receipt.observed_wall_millis,
+        receipt.observed_max_rss_bytes,
+        receipt.observed_disk_bytes
+    );
+    Ok(())
+}
+
+fn verify_scale_receipt_structure(receipt: &ScaleReceiptV1, expected_atoms: usize) -> Result<()> {
     ensure!(
         receipt.contract_version == "scale-receipt-v1"
             && receipt.evidence_digest == receipt.recompute_evidence_digest()?,
         "unknown or tampered scale receipt"
     );
     ensure!(
-        receipt.status == EvidenceStatusV1::Passed && receipt.atom_count == expected_atoms,
-        "scale evidence is absent, failed, or has the wrong atom count"
+        receipt.atom_count == expected_atoms,
+        "scale atom count {} differs from expected {expected_atoms}",
+        receipt.atom_count
     );
     ensure!(
-        receipt.p50_body_bytes == 16 * 1024
-            && receipt.p95_body_bytes == 64 * 1024
-            && receipt.maximum_body_bytes == 256 * 1024,
-        "scale body distribution differs from scale-v1"
+        (100..=DEEP_SCALE_ATOM_COUNT).contains(&receipt.atom_count),
+        "scale atom count is outside the supported proof envelope"
     );
     ensure!(
         receipt.plan_replay_verified
@@ -1168,20 +1300,33 @@ fn verify_scale_receipt(receipt: &ScaleReceiptV1, expected_atoms: usize) -> Resu
             && receipt.spontaneous_hit_count > 0,
         "scale full-path closure is incomplete"
     );
-    if expected_atoms == 100_000 {
-        ensure!(
-            valid_git_commit(&receipt.source_commit)
-                && receipt.observed_wall_millis <= 1_800_000
-                && receipt
-                    .observed_max_rss_bytes
-                    .is_some_and(|bytes| bytes <= 6 * 1024 * 1024 * 1024)
-                && receipt
-                    .observed_disk_bytes
-                    .is_some_and(|bytes| bytes <= 10 * 1024 * 1024 * 1024),
-            "100,000-atom scale receipt exceeds its time, RSS, or disk envelope"
-        );
-    }
     let _atom_stream_digest = Digest32::from_str(&receipt.atom_stream_digest)?;
+    let expected_logical_digest = recompute_scale_logical_digest(receipt)?;
+    ensure!(
+        Digest32::from_str(&receipt.logical_digest)? == expected_logical_digest,
+        "scale logical digest does not close"
+    );
+    let distribution_matches = receipt.p50_body_bytes == 16 * 1024
+        && receipt.p95_body_bytes == 64 * 1024
+        && receipt.maximum_body_bytes == 256 * 1024;
+    let expected_status = classify_scale_evidence(
+        receipt.atom_count,
+        distribution_matches,
+        receipt.observed_wall_millis,
+        receipt.observed_max_rss_bytes,
+        receipt.observed_disk_bytes,
+        valid_git_commit(&receipt.source_commit),
+    );
+    ensure!(
+        receipt.status == expected_status,
+        "scale evidence status {:?} is inconsistent with recomputed status {:?}",
+        receipt.status,
+        expected_status
+    );
+    Ok(())
+}
+
+fn recompute_scale_logical_digest(receipt: &ScaleReceiptV1) -> Result<Digest32> {
     let input_set_digest = Digest32::from_str(&receipt.input_set_digest)?;
     let plan_digest = Digest32::from_str(&receipt.plan_digest)?;
     let proof_receipt_digest = Digest32::from_str(&receipt.receipt_digest)?;
@@ -1199,15 +1344,10 @@ fn verify_scale_receipt(receipt: &ScaleReceiptV1, expected_atoms: usize) -> Resu
         receipt_digest: proof_receipt_digest,
         retrieval_digest,
     };
-    let expected_logical_digest = Digest32::hash_prefixed(
+    Ok(Digest32::hash_prefixed(
         b"naome-memory:scale-logical-closure:v1\0",
         &authority.canonical_bytes()?,
-    );
-    ensure!(
-        Digest32::from_str(&receipt.logical_digest)? == expected_logical_digest,
-        "scale logical digest does not close"
-    );
-    Ok(())
+    ))
 }
 
 fn scale_target(index: usize, atom_count: usize) -> u64 {
@@ -1419,15 +1559,154 @@ fn directory_bytes(path: &Path) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EvidenceStatusV1, ScaleReceiptV1, ToolReceiptV1, ToolTargetEvidenceV1, read_json,
-        scale_with_output, sha256_hex, verify_mutation_receipt, verify_scale_receipt,
+        DEEP_SCALE_ATOM_COUNT, EvidenceStatusV1, SCALE_CORE_RECEIPT_FILE, SCALE_MAX_DISK_BYTES,
+        SCALE_MAX_RSS_BYTES, SCALE_MAX_WALL_MILLIS, SCALE_RECEIPT_FILE, ScaleReceiptV1,
+        ToolReceiptV1, ToolTargetEvidenceV1, classify_scale_evidence, clear_scale_evidence,
+        publish_and_verify_scale_evidence, read_json, recompute_scale_logical_digest,
+        scale_source_binding_complete, scale_with_output, sha256_hex, verify_mutation_receipt,
+        verify_scale_receipt, verify_scale_receipt_structure,
     };
+    use anyhow::Context as _;
+    use naome_memory_core::{Digest32, OverallProofStatusV1, ProofReceiptV1};
+
+    #[test]
+    fn scale_source_binding_requires_the_same_clean_full_commit() {
+        let first = "a".repeat(40);
+        let second = "b".repeat(40);
+        assert!(scale_source_binding_complete(
+            Some(first.as_str()),
+            Some(first.as_str())
+        ));
+        assert!(!scale_source_binding_complete(
+            Some(first.as_str()),
+            Some(second.as_str())
+        ));
+        assert!(!scale_source_binding_complete(Some(first.as_str()), None));
+        assert!(!scale_source_binding_complete(None, Some(first.as_str())));
+        assert!(!scale_source_binding_complete(
+            Some("uncommitted"),
+            Some("uncommitted")
+        ));
+    }
+
+    #[test]
+    fn deep_scale_status_distinguishes_pass_failure_and_missing_evidence() {
+        assert_eq!(
+            classify_scale_evidence(
+                DEEP_SCALE_ATOM_COUNT,
+                true,
+                SCALE_MAX_WALL_MILLIS,
+                Some(SCALE_MAX_RSS_BYTES),
+                Some(SCALE_MAX_DISK_BYTES),
+                true,
+            ),
+            EvidenceStatusV1::Passed
+        );
+        assert_eq!(
+            classify_scale_evidence(
+                DEEP_SCALE_ATOM_COUNT,
+                true,
+                SCALE_MAX_WALL_MILLIS,
+                None,
+                Some(SCALE_MAX_DISK_BYTES),
+                true,
+            ),
+            EvidenceStatusV1::Inconclusive
+        );
+        assert_eq!(
+            classify_scale_evidence(
+                DEEP_SCALE_ATOM_COUNT,
+                true,
+                SCALE_MAX_WALL_MILLIS,
+                Some(SCALE_MAX_RSS_BYTES),
+                None,
+                true,
+            ),
+            EvidenceStatusV1::Inconclusive
+        );
+
+        for (wall, rss, disk, distribution_matches) in [
+            (
+                SCALE_MAX_WALL_MILLIS + 1,
+                Some(SCALE_MAX_RSS_BYTES),
+                Some(SCALE_MAX_DISK_BYTES),
+                true,
+            ),
+            (
+                SCALE_MAX_WALL_MILLIS,
+                Some(SCALE_MAX_RSS_BYTES + 1),
+                Some(SCALE_MAX_DISK_BYTES),
+                true,
+            ),
+            (
+                SCALE_MAX_WALL_MILLIS,
+                Some(SCALE_MAX_RSS_BYTES),
+                Some(SCALE_MAX_DISK_BYTES + 1),
+                true,
+            ),
+            (
+                SCALE_MAX_WALL_MILLIS,
+                Some(SCALE_MAX_RSS_BYTES),
+                Some(SCALE_MAX_DISK_BYTES),
+                false,
+            ),
+            (SCALE_MAX_WALL_MILLIS + 1, None, None, true),
+        ] {
+            assert_eq!(
+                classify_scale_evidence(
+                    DEEP_SCALE_ATOM_COUNT,
+                    distribution_matches,
+                    wall,
+                    rss,
+                    disk,
+                    true,
+                ),
+                EvidenceStatusV1::Failed
+            );
+        }
+
+        assert_eq!(
+            classify_scale_evidence(5_000, true, SCALE_MAX_WALL_MILLIS, None, None, false),
+            EvidenceStatusV1::Passed
+        );
+        assert_eq!(
+            classify_scale_evidence(
+                DEEP_SCALE_ATOM_COUNT,
+                true,
+                SCALE_MAX_WALL_MILLIS,
+                Some(SCALE_MAX_RSS_BYTES),
+                Some(SCALE_MAX_DISK_BYTES),
+                false,
+            ),
+            EvidenceStatusV1::Inconclusive
+        );
+    }
+
+    #[test]
+    fn clearing_scale_evidence_removes_both_stale_receipts_and_is_idempotent() -> anyhow::Result<()>
+    {
+        let output = tempfile::tempdir()?;
+        std::fs::write(output.path().join(SCALE_RECEIPT_FILE), b"stale scale")?;
+        std::fs::write(output.path().join(SCALE_CORE_RECEIPT_FILE), b"stale core")?;
+
+        clear_scale_evidence(output.path())?;
+        assert!(!output.path().join(SCALE_RECEIPT_FILE).exists());
+        assert!(!output.path().join(SCALE_CORE_RECEIPT_FILE).exists());
+        clear_scale_evidence(output.path())?;
+        Ok(())
+    }
+
+    fn scale_fixture() -> anyhow::Result<(tempfile::TempDir, ScaleReceiptV1, ProofReceiptV1)> {
+        let output = tempfile::tempdir()?;
+        scale_with_output(100, output.path())?;
+        let report: ScaleReceiptV1 = read_json(&output.path().join(SCALE_RECEIPT_FILE))?;
+        let core_receipt: ProofReceiptV1 = read_json(&output.path().join(SCALE_CORE_RECEIPT_FILE))?;
+        Ok((output, report, core_receipt))
+    }
 
     #[test]
     fn representative_scale_smoke_runs_the_full_path() -> anyhow::Result<()> {
-        let output = tempfile::tempdir()?;
-        scale_with_output(100, output.path())?;
-        let report: ScaleReceiptV1 = read_json(&output.path().join("scale-receipt.json"))?;
+        let (_output, report, _core_receipt) = scale_fixture()?;
         assert_eq!(report.status, EvidenceStatusV1::Passed);
         assert_eq!(report.atom_count, 100);
         assert!(report.plan_replay_verified);
@@ -1439,7 +1718,140 @@ mod tests {
         assert!(report.spontaneous_hit_count > 0);
         let mut tampered = report.clone();
         tampered.observed_wall_millis = tampered.observed_wall_millis.saturating_add(1);
-        assert!(verify_scale_receipt(&tampered, 100).is_err());
+        let error = verify_scale_receipt(&tampered, 100)
+            .err()
+            .context("tampered scale receipt unexpectedly verified")?;
+        assert!(error.to_string().contains("unknown or tampered"));
+
+        let error = verify_scale_receipt(&report, 101)
+            .err()
+            .context("wrong scale atom count unexpectedly verified")?;
+        assert!(error.to_string().contains("atom count"));
+
+        let mut mislabeled = report.clone();
+        mislabeled.observed_wall_millis = SCALE_MAX_WALL_MILLIS + 1;
+        mislabeled.evidence_digest = mislabeled.recompute_evidence_digest()?;
+        let error = verify_scale_receipt(&mislabeled, 100)
+            .err()
+            .context("mislabeled scale receipt unexpectedly verified")?;
+        assert!(error.to_string().contains("inconsistent"));
+
+        let mut inconclusive = report.clone();
+        inconclusive.atom_count = DEEP_SCALE_ATOM_COUNT;
+        inconclusive.source_commit = "uncommitted".to_owned();
+        inconclusive.status = EvidenceStatusV1::Inconclusive;
+        inconclusive.observed_wall_millis = SCALE_MAX_WALL_MILLIS;
+        inconclusive.observed_max_rss_bytes = None;
+        inconclusive.observed_disk_bytes = Some(SCALE_MAX_DISK_BYTES);
+        inconclusive.logical_digest = recompute_scale_logical_digest(&inconclusive)?.to_hex();
+        inconclusive.evidence_digest = inconclusive.recompute_evidence_digest()?;
+        verify_scale_receipt_structure(&inconclusive, DEEP_SCALE_ATOM_COUNT)?;
+        let error = verify_scale_receipt(&inconclusive, DEEP_SCALE_ATOM_COUNT)
+            .err()
+            .context("inconclusive scale receipt unexpectedly passed")?;
+        assert!(error.to_string().contains("status Inconclusive"));
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_scale_evidence_publishes_only_after_structural_validation() -> anyhow::Result<()> {
+        let (_output, report, core_receipt) = scale_fixture()?;
+        let mut failed = report.clone();
+        failed.status = EvidenceStatusV1::Failed;
+        failed.observed_wall_millis = SCALE_MAX_WALL_MILLIS + 1;
+        failed.evidence_digest = failed.recompute_evidence_digest()?;
+        verify_scale_receipt_structure(&failed, 100)?;
+        let error = verify_scale_receipt(&failed, 100)
+            .err()
+            .context("failed scale receipt unexpectedly verified")?;
+        assert!(error.to_string().contains("status Failed"));
+
+        let failed_output = tempfile::tempdir()?;
+        let error =
+            publish_and_verify_scale_evidence(failed_output.path(), &core_receipt, &failed, 100)
+                .err()
+                .context("failed scale publication unexpectedly verified")?;
+        assert!(error.to_string().contains("status Failed"));
+        let published_report: ScaleReceiptV1 =
+            read_json(&failed_output.path().join(SCALE_RECEIPT_FILE))?;
+        let published_core: ProofReceiptV1 =
+            read_json(&failed_output.path().join(SCALE_CORE_RECEIPT_FILE))?;
+        assert_eq!(published_report, failed);
+        assert_eq!(published_core, core_receipt);
+
+        let mut invalid_logical = failed.clone();
+        invalid_logical.logical_digest =
+            Digest32::hash_prefixed(b"naome-memory:test:invalid-scale\0", b"invalid").to_hex();
+        invalid_logical.evidence_digest = invalid_logical.recompute_evidence_digest()?;
+        let invalid_output = tempfile::tempdir()?;
+        let error = publish_and_verify_scale_evidence(
+            invalid_output.path(),
+            &core_receipt,
+            &invalid_logical,
+            100,
+        )
+        .err()
+        .context("invalid logical scale receipt was published")?;
+        assert!(error.to_string().contains("logical digest"));
+        assert!(!invalid_output.path().join(SCALE_RECEIPT_FILE).exists());
+        assert!(!invalid_output.path().join(SCALE_CORE_RECEIPT_FILE).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn scale_core_binding_rejects_mismatched_or_nonpassed_receipts() -> anyhow::Result<()> {
+        let (_output, report, core_receipt) = scale_fixture()?;
+        let mut invalid_core = core_receipt.clone();
+        invalid_core.receipt_id =
+            Digest32::hash_prefixed(b"naome-memory:test:invalid-core\0", b"invalid");
+        let invalid_output = tempfile::tempdir()?;
+        let error =
+            publish_and_verify_scale_evidence(invalid_output.path(), &invalid_core, &report, 100)
+                .err()
+                .context("invalid core receipt was published")?;
+        assert!(error.to_string().contains("core retirement receipt id"));
+        assert!(!invalid_output.path().join(SCALE_RECEIPT_FILE).exists());
+        assert!(!invalid_output.path().join(SCALE_CORE_RECEIPT_FILE).exists());
+
+        let mut mismatched_report = report.clone();
+        mismatched_report.input_set_digest =
+            Digest32::hash_prefixed(b"naome-memory:test:mismatched-input\0", b"input").to_hex();
+        mismatched_report.logical_digest =
+            recompute_scale_logical_digest(&mismatched_report)?.to_hex();
+        mismatched_report.evidence_digest = mismatched_report.recompute_evidence_digest()?;
+        let invalid_output = tempfile::tempdir()?;
+        let error = publish_and_verify_scale_evidence(
+            invalid_output.path(),
+            &core_receipt,
+            &mismatched_report,
+            100,
+        )
+        .err()
+        .context("mismatched input-set report was published")?;
+        assert!(error.to_string().contains("not bound"));
+        assert!(!invalid_output.path().join(SCALE_RECEIPT_FILE).exists());
+        assert!(!invalid_output.path().join(SCALE_CORE_RECEIPT_FILE).exists());
+
+        let mut rejected_core = core_receipt.clone();
+        rejected_core.overall_status = OverallProofStatusV1::Invalid;
+        rejected_core.receipt_id = rejected_core.recompute_receipt_id()?;
+        let mut rejected_core_report = report.clone();
+        rejected_core_report.receipt_digest = rejected_core.receipt_id.to_hex();
+        rejected_core_report.logical_digest =
+            recompute_scale_logical_digest(&rejected_core_report)?.to_hex();
+        rejected_core_report.evidence_digest = rejected_core_report.recompute_evidence_digest()?;
+        let invalid_output = tempfile::tempdir()?;
+        let error = publish_and_verify_scale_evidence(
+            invalid_output.path(),
+            &rejected_core,
+            &rejected_core_report,
+            100,
+        )
+        .err()
+        .context("non-passed core receipt was published")?;
+        assert!(error.to_string().contains("required verified invariants"));
+        assert!(!invalid_output.path().join(SCALE_RECEIPT_FILE).exists());
+        assert!(!invalid_output.path().join(SCALE_CORE_RECEIPT_FILE).exists());
         Ok(())
     }
 
