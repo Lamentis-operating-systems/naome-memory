@@ -2,7 +2,21 @@
 
 NAOME Memory is an experimental, deterministic memory-consolidation and episodic-retention engine for the NAOME autonomous agent kernel. It stores rich episode atoms in short-term memory, derives only sufficiently supported semantic structures, and preserves a small, seeded random sample of eligible episodes exactly.
 
-This repository is a proof of concept. It does **not** claim human-like memory, semantic truth, optimal ranking, production handling of personal data, distributed persistence, encryption, or scalability beyond the explicitly tested 100,000-atom envelope.
+This repository is a proof of concept. It does **not** claim human-like memory, semantic truth, optimal ranking, production handling of personal data, distributed persistence, encryption, or scalability beyond its declared synthetic test workloads.
+
+## Research direction
+
+The current implementation is a mechanism PoC, not yet the memory architecture
+needed to demonstrate better autonomous software engineering. The
+[`NAOME Memory design paper`](paper/NAOME-MEMORY.md) defines that next system:
+an evidence-bound, NSIT-revision-aware engineering experience substrate with a
+typed kernel API, explicit authority boundaries, local resource accounting,
+and a falsifiable evaluation against strong baselines. It also audits the
+current PoC and preserves its rejected semantic-retrieval result.
+
+The paper is an architecture and preregistration blueprint. Its proposed
+Engineering Memory contracts are not claims about features already implemented
+in this repository.
 
 ## Design contract
 
