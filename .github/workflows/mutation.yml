@@ -26,6 +26,17 @@ jobs:
         run: cargo +1.95.0 install --locked cargo-mutants --version 27.1.0
       - name: Run mutation gate
         run: cargo +1.95.0 run --locked -p xtask -- mutation
+      - name: Install pinned Draft 2020-12 validator
+        if: ${{ always() }}
+        run: python3 -m pip install --disable-pip-version-check --no-input --requirement .github/schema-requirements.txt
+      - name: Verify runtime and schema closure of mutation evidence
+        if: ${{ always() }}
+        run: |
+          cargo +1.95.0 run --locked -p xtask -- verify-tool-receipt \
+            --receipt target/proofs/mutation-receipt.json \
+            --proof-dir target/proofs
+          python3 scripts/validate_json_schemas.py \
+            --bind schemas/tool-receipt-v1.schema.json=target/proofs/mutation-receipt.json
       - name: Upload mutation evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

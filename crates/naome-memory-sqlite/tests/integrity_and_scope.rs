@@ -10,13 +10,44 @@ use naome_memory_core::{
     RetentionTierV1, SealReasonV1, TimeIntervalV1,
 };
 use naome_memory_sqlite::{
-    ArtifactStore, CohortKey, SearchScope, SqliteRepository, StoreConfig, StoreError,
+    ArtifactStore, CohortKey, DraftEvent, SearchScope, SqliteRepository, StoreConfig, StoreError,
 };
 use rusqlite::{Connection, params};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 const MICROSECONDS_PER_DAY: u64 = 86_400_000_000;
+
+#[test]
+fn empty_draft_payload_is_integral_after_required_policy_install() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let mut repository = SqliteRepository::open(&StoreConfig::new(
+        directory.path().join("memory.db"),
+        directory.path().join("artifacts"),
+    ))?;
+    repository.install_policy(&PolicyV1::poc_v1(), 1)?;
+    repository.create_draft(
+        "empty-payload-draft",
+        "test-space",
+        Some("test-repository"),
+        Some("test-task"),
+        Some("test-agent"),
+        "test-session",
+        1,
+    )?;
+    let event = DraftEvent {
+        sequence: 0,
+        event_at_us: 2,
+        event_kind: "empty-payload".to_owned(),
+        canonical_payload: Vec::new(),
+        payload_digest: Digest32::hash_prefixed(&[], &[]).0,
+    };
+
+    repository.append_event("empty-payload-draft", &event)?;
+    assert_eq!(repository.load_events("empty-payload-draft")?, vec![event]);
+    repository.check_integrity(false)?;
+    Ok(())
+}
 
 #[test]
 fn fts_candidates_are_hard_isolated_by_memory_space_and_repository() -> TestResult {

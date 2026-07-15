@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 use libfuzzer_sys::fuzz_target;
-use naome_memory_core::Digest32;
+use naome_memory_core::{Digest32, PolicyV1};
 use naome_memory_sqlite::{DraftEvent, SqliteRepository, StoreConfig};
 
 fuzz_target!(|data: &[u8]| {
@@ -13,6 +13,9 @@ fuzz_target!(|data: &[u8]| {
             directory.path().join("artifacts"),
         ))
     {
+        repository
+            .install_policy(&PolicyV1::poc_v1(), 1)
+            .expect("install fuzz policy authority");
         let digest = Digest32::hash_prefixed(&[], bounded);
         let draft_id = format!("fuzz-{}", digest.to_hex());
         if repository
@@ -39,7 +42,9 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!(first.is_ok(), loaded.is_ok());
             if let Ok(events) = loaded {
                 assert_eq!(events, vec![event]);
-                assert!(repository.check_integrity(false).is_ok());
+                repository
+                    .check_integrity(false)
+                    .expect("fuzz repository integrity after draft ingest");
             }
         }
     }

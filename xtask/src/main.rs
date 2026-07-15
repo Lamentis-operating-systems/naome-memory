@@ -37,6 +37,9 @@ const MUTATION_RECEIPT_FILE: &str = "mutation-receipt.json";
 const MUTATION_LOG_STEM: &str = "mutation-naome-memory-core";
 const MUTATION_OUTPUT_DIR: &str = "mutation-tool";
 const FUZZ_RECEIPT_FILE: &str = "fuzz-receipt.json";
+const FUZZ_ARTIFACT_DIR: &str = "fuzz-artifacts";
+const FUZZ_MAX_ARTIFACT_COUNT: usize = 16;
+const FUZZ_MAX_ARTIFACT_BYTES: u64 = 1024 * 1024;
 const DEEP_SCALE_ATOM_COUNT: usize = 100_000;
 const SCALE_MAX_WALL_MILLIS: u64 = 1_800_000;
 const SCALE_MAX_RSS_BYTES: u64 = 6 * 1024 * 1024 * 1024;
@@ -90,6 +93,12 @@ enum Task {
     Fuzz {
         #[arg(long)]
         seconds: u64,
+    },
+    VerifyToolReceipt {
+        #[arg(long)]
+        receipt: PathBuf,
+        #[arg(long)]
+        proof_dir: PathBuf,
     },
     AssertClaims {
         #[arg(long)]
@@ -163,6 +172,14 @@ struct ToolTargetEvidenceV1 {
     log_stem: String,
     stdout_digest: String,
     stderr_digest: String,
+    artifacts: Vec<ToolArtifactEvidenceV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ToolArtifactEvidenceV1 {
+    relative_path: String,
+    byte_len: u64,
+    sha256: String,
 }
 
 #[derive(Serialize)]
@@ -234,6 +251,9 @@ fn main() -> Result<()> {
         Task::Scale { atoms } => scale(atoms),
         Task::Mutation => mutation(),
         Task::Fuzz { seconds } => fuzz(seconds),
+        Task::VerifyToolReceipt { receipt, proof_dir } => {
+            verify_tool_receipt_file(&receipt, &proof_dir)
+        }
         Task::AssertClaims { receipt } => assert_claims(&receipt),
         Task::ReleasePreflight { version } => release_preflight(&version),
     }
@@ -845,9 +865,10 @@ fn mutation_target_command(toolchain: &str) -> Vec<String> {
 fn fuzz(seconds: u64) -> Result<()> {
     ensure!(seconds > 0, "fuzz duration must be greater than zero");
     let fuzz_manifest = workspace_root().join("fuzz/Cargo.toml");
+    let fuzz_artifacts = workspace_root().join("fuzz/artifacts");
     let proof_dir = workspace_root().join(PROOF_DIR);
     fs::create_dir_all(&proof_dir)?;
-    clear_fuzz_evidence(&proof_dir)?;
+    clear_fuzz_evidence(&proof_dir, &fuzz_artifacts)?;
     let source_commit_at_start = current_clean_source_commit();
     let tool_version = observed_cargo_subcommand_version(FUZZ_NIGHTLY, "fuzz")
         .unwrap_or_else(|_| "unavailable".to_owned());
@@ -855,13 +876,14 @@ fn fuzz(seconds: u64) -> Result<()> {
     if fuzz_manifest.is_file() {
         for (target, log_stem) in FUZZ_TARGETS {
             let command = fuzz_target_command(target, seconds);
-            targets.push(capture_tool_target(
-                &proof_dir,
-                log_stem,
+            let mut evidence =
+                capture_tool_target(&proof_dir, log_stem, target, command, Some(seconds))?;
+            evidence.artifacts = preserve_fuzz_artifacts(
+                &fuzz_artifacts,
+                &proof_dir.join(FUZZ_ARTIFACT_DIR),
                 target,
-                command,
-                Some(seconds),
-            )?);
+            )?;
+            targets.push(evidence);
         }
     }
     let source_commit_at_publication = current_clean_source_commit();
@@ -938,7 +960,7 @@ fn fuzz_target_command(target: &str, seconds: u64) -> Vec<String> {
     ]
 }
 
-fn clear_fuzz_evidence(proof_dir: &Path) -> Result<()> {
+fn clear_fuzz_evidence(proof_dir: &Path, fuzz_artifacts: &Path) -> Result<()> {
     let mut paths = vec![proof_dir.join(FUZZ_RECEIPT_FILE)];
     let logs = proof_dir.join("tool-logs");
     for (_, log_stem) in FUZZ_TARGETS {
@@ -955,7 +977,72 @@ fn clear_fuzz_evidence(proof_dir: &Path) -> Result<()> {
             }
         }
     }
+    for directory in [proof_dir.join(FUZZ_ARTIFACT_DIR), fuzz_artifacts.to_owned()] {
+        match fs::remove_dir_all(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("could not remove stale {}", directory.display()));
+            }
+        }
+    }
     Ok(())
+}
+
+fn preserve_fuzz_artifacts(
+    source_root: &Path,
+    proof_root: &Path,
+    target: &str,
+) -> Result<Vec<ToolArtifactEvidenceV1>> {
+    let source = source_root.join(target);
+    if !source.exists() {
+        return Ok(Vec::new());
+    }
+    let mut entries = fs::read_dir(&source)?.collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
+    ensure!(
+        entries.len() <= FUZZ_MAX_ARTIFACT_COUNT,
+        "fuzz target produced too many crash artifacts"
+    );
+    let destination = proof_root.join(target);
+    let mut artifacts = Vec::with_capacity(entries.len());
+    for entry in entries {
+        ensure!(
+            entry.file_type()?.is_file(),
+            "fuzz crash artifact is not a regular file"
+        );
+        let file_name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("fuzz crash artifact name is not UTF-8"))?;
+        ensure!(
+            safe_artifact_file_name(&file_name),
+            "unsafe fuzz crash artifact name"
+        );
+        let bytes = fs::read(entry.path())?;
+        let byte_len = u64::try_from(bytes.len())?;
+        ensure!(
+            byte_len <= FUZZ_MAX_ARTIFACT_BYTES,
+            "fuzz crash artifact exceeds the bounded evidence limit"
+        );
+        fs::create_dir_all(&destination)?;
+        fs::write(destination.join(&file_name), &bytes)?;
+        artifacts.push(ToolArtifactEvidenceV1 {
+            relative_path: format!("{FUZZ_ARTIFACT_DIR}/{target}/{file_name}"),
+            byte_len,
+            sha256: sha256_hex(&bytes),
+        });
+    }
+    Ok(artifacts)
+}
+
+fn safe_artifact_file_name(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn classify_tool_evidence(
@@ -1031,6 +1118,7 @@ fn capture_tool_target(
         log_stem: log_stem.to_owned(),
         stdout_digest: sha256_hex(&stdout),
         stderr_digest: sha256_hex(&stderr),
+        artifacts: Vec::new(),
     })
 }
 
@@ -1103,31 +1191,36 @@ fn sha256_hex(bytes: &[u8]) -> String {
     Digest32(Sha256::digest(bytes).into()).to_hex()
 }
 
+struct ToolReceiptExpectationV1<'a> {
+    contract: &'a str,
+    tool: &'a str,
+    version: &'a str,
+    toolchain: &'a str,
+    target_count: usize,
+}
+
 fn verify_tool_receipt_common(
     receipt: &ToolReceiptV1,
     proof_dir: &Path,
-    expected_contract: &str,
-    expected_tool: &str,
-    expected_version: &str,
-    expected_toolchain: &str,
+    expected: &ToolReceiptExpectationV1<'_>,
     expected_commit: &str,
 ) -> Result<()> {
+    let expected_status =
+        classify_tool_evidence(&receipt.targets, expected.target_count, true, true);
     ensure!(
-        receipt.contract_version == expected_contract
-            && receipt.tool == expected_tool
-            && receipt.tool_version.contains(expected_version)
-            && receipt.toolchain == expected_toolchain
+        receipt.contract_version == expected.contract
+            && receipt.tool == expected.tool
+            && receipt.tool_version.contains(expected.version)
+            && receipt.toolchain == expected.toolchain
             && receipt.source_commit == expected_commit
-            && receipt.status == EvidenceStatusV1::Passed
+            && receipt.status == expected_status
             && receipt.receipt_digest == receipt.recompute_digest()?,
         "tool receipt metadata, source, status, or digest does not close"
     );
     for target in &receipt.targets {
         ensure!(
-            safe_log_stem(&target.log_stem)
-                && target.exit_code == Some(0)
-                && target.observed_duration_millis > 0,
-            "tool target did not record a successful bounded execution"
+            safe_log_stem(&target.log_stem),
+            "tool target log path is outside the bounded contract"
         );
         let logs = proof_dir.join("tool-logs");
         let stdout = fs::read(logs.join(format!("{}.stdout.log", target.log_stem)))?;
@@ -1141,11 +1234,114 @@ fn verify_tool_receipt_common(
                 && target.stderr_digest == sha256_hex(&stderr),
             "tool target output digest does not match its retained log"
         );
+        ensure!(
+            target.artifacts.len() <= FUZZ_MAX_ARTIFACT_COUNT,
+            "tool target retained too many bounded artifacts"
+        );
+        for artifact in &target.artifacts {
+            ensure!(
+                safe_proof_relative_path(&artifact.relative_path)
+                    && artifact.byte_len <= FUZZ_MAX_ARTIFACT_BYTES,
+                "tool target artifact path or size is outside the bounded contract"
+            );
+            let artifact_path = proof_dir.join(&artifact.relative_path);
+            let metadata = fs::symlink_metadata(&artifact_path)?;
+            ensure!(
+                metadata.file_type().is_file()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.len() == artifact.byte_len
+                    && metadata.len() <= FUZZ_MAX_ARTIFACT_BYTES,
+                "tool target artifact is not a bounded self-contained file"
+            );
+            let bytes = fs::read(&artifact_path)?;
+            ensure!(
+                artifact.byte_len == u64::try_from(bytes.len())?
+                    && artifact.sha256 == sha256_hex(&bytes),
+                "tool target artifact digest or size does not match retained evidence"
+            );
+        }
     }
     Ok(())
 }
 
-fn verify_mutation_receipt(
+fn safe_proof_relative_path(value: &str) -> bool {
+    let path = Path::new(value);
+    !value.is_empty()
+        && !value.contains('\\')
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+fn retained_fuzz_artifact_paths(proof_dir: &Path) -> Result<BTreeSet<String>> {
+    let root = proof_dir.join(FUZZ_ARTIFACT_DIR);
+    let root_metadata = match fs::symlink_metadata(&root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BTreeSet::new());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(
+        root_metadata.file_type().is_dir() && !root_metadata.file_type().is_symlink(),
+        "fuzz artifact root is not a self-contained directory"
+    );
+    let expected_targets = FUZZ_TARGETS
+        .iter()
+        .map(|(target, _)| *target)
+        .collect::<BTreeSet<_>>();
+    let mut retained = BTreeSet::new();
+    for target_entry in fs::read_dir(&root)? {
+        let target_entry = target_entry?;
+        ensure!(
+            target_entry.file_type()?.is_dir(),
+            "fuzz artifact root contains a non-directory entry"
+        );
+        let target = target_entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("fuzz artifact target is not UTF-8"))?;
+        ensure!(
+            expected_targets.contains(target.as_str()),
+            "fuzz artifact belongs to an unknown target"
+        );
+        let mut target_count = 0_usize;
+        for artifact_entry in fs::read_dir(target_entry.path())? {
+            let artifact_entry = artifact_entry?;
+            ensure!(
+                artifact_entry.file_type()?.is_file(),
+                "fuzz artifact target contains a non-file entry"
+            );
+            let file_name = artifact_entry
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("fuzz artifact name is not UTF-8"))?;
+            ensure!(
+                safe_artifact_file_name(&file_name),
+                "fuzz artifact name is unsafe"
+            );
+            ensure!(
+                artifact_entry.metadata()?.len() <= FUZZ_MAX_ARTIFACT_BYTES,
+                "fuzz artifact exceeds the bounded evidence limit"
+            );
+            target_count = target_count
+                .checked_add(1)
+                .context("fuzz artifact count overflow")?;
+            ensure!(
+                target_count <= FUZZ_MAX_ARTIFACT_COUNT,
+                "fuzz target retained too many crash artifacts"
+            );
+            ensure!(
+                retained.insert(format!("{FUZZ_ARTIFACT_DIR}/{target}/{file_name}")),
+                "duplicate fuzz artifact path"
+            );
+        }
+    }
+    Ok(retained)
+}
+
+fn verify_mutation_receipt_evidence(
     receipt: &ToolReceiptV1,
     proof_dir: &Path,
     expected_commit: &str,
@@ -1153,10 +1349,13 @@ fn verify_mutation_receipt(
     verify_tool_receipt_common(
         receipt,
         proof_dir,
-        "mutation-receipt-v1",
-        "cargo-mutants",
-        MUTATION_TOOL_VERSION,
-        "1.95.0",
+        &ToolReceiptExpectationV1 {
+            contract: "mutation-receipt-v1",
+            tool: "cargo-mutants",
+            version: MUTATION_TOOL_VERSION,
+            toolchain: "1.95.0",
+            target_count: 1,
+        },
         expected_commit,
     )?;
     let expected_command = vec![
@@ -1177,24 +1376,29 @@ fn verify_mutation_receipt(
                     && target.log_stem == "mutation-naome-memory-core"
                     && target.requested_duration_seconds.is_none()
                     && target.command == expected_command
+                    && target.artifacts.is_empty()
             }),
         "mutation receipt target or command differs from the release gate"
     );
     Ok(())
 }
 
-fn verify_fuzz_receipt(
+fn verify_fuzz_receipt_evidence(
     receipt: &ToolReceiptV1,
     proof_dir: &Path,
     expected_commit: &str,
 ) -> Result<()> {
+    let retained_artifacts = retained_fuzz_artifact_paths(proof_dir)?;
     verify_tool_receipt_common(
         receipt,
         proof_dir,
-        "fuzz-receipt-v1",
-        "cargo-fuzz/libFuzzer",
-        FUZZ_TOOL_VERSION,
-        FUZZ_NIGHTLY,
+        &ToolReceiptExpectationV1 {
+            contract: "fuzz-receipt-v1",
+            tool: "cargo-fuzz/libFuzzer",
+            version: FUZZ_TOOL_VERSION,
+            toolchain: FUZZ_NIGHTLY,
+            target_count: FUZZ_TARGETS.len(),
+        },
         expected_commit,
     )?;
     let expected_targets = [
@@ -1207,6 +1411,7 @@ fn verify_fuzz_receipt(
         receipt.targets.len() == expected_targets.len(),
         "fuzz receipt target count differs from the release gate"
     );
+    let mut recorded_artifacts = BTreeSet::new();
     for (target, (expected, expected_log_stem)) in receipt.targets.iter().zip(expected_targets) {
         let expected_command = vec![
             "cargo".to_owned(),
@@ -1224,7 +1429,90 @@ fn verify_fuzz_receipt(
                 && target.command == expected_command,
             "fuzz receipt target or command differs from the release gate"
         );
+        let expected_prefix = format!("{FUZZ_ARTIFACT_DIR}/{expected}/");
+        for artifact in &target.artifacts {
+            ensure!(
+                artifact.relative_path.starts_with(&expected_prefix)
+                    && artifact
+                        .relative_path
+                        .strip_prefix(&expected_prefix)
+                        .is_some_and(safe_artifact_file_name),
+                "fuzz artifact is not bound to its producing target"
+            );
+            ensure!(
+                recorded_artifacts.insert(artifact.relative_path.clone()),
+                "duplicate fuzz artifact evidence"
+            );
+        }
     }
+    ensure!(
+        recorded_artifacts == retained_artifacts,
+        "fuzz artifact directory does not exactly match the receipt closure"
+    );
+    Ok(())
+}
+
+fn require_passed_tool_receipt(receipt: &ToolReceiptV1) -> Result<()> {
+    ensure!(
+        receipt.status == EvidenceStatusV1::Passed
+            && receipt.targets.iter().all(|target| {
+                target.exit_code == Some(0) && target.observed_duration_millis > 0
+            }),
+        "tool receipt is closed but did not pass its bounded campaign"
+    );
+    Ok(())
+}
+
+fn verify_mutation_receipt(
+    receipt: &ToolReceiptV1,
+    proof_dir: &Path,
+    expected_commit: &str,
+) -> Result<()> {
+    verify_mutation_receipt_evidence(receipt, proof_dir, expected_commit)?;
+    require_passed_tool_receipt(receipt)
+}
+
+fn verify_fuzz_receipt(
+    receipt: &ToolReceiptV1,
+    proof_dir: &Path,
+    expected_commit: &str,
+) -> Result<()> {
+    verify_fuzz_receipt_evidence(receipt, proof_dir, expected_commit)?;
+    require_passed_tool_receipt(receipt)?;
+    ensure!(
+        receipt
+            .targets
+            .iter()
+            .all(|target| target.artifacts.is_empty()),
+        "a passed fuzz campaign must not retain crash reproducers"
+    );
+    Ok(())
+}
+
+fn verify_tool_receipt_file(receipt_path: &Path, proof_dir: &Path) -> Result<()> {
+    let receipt: ToolReceiptV1 = read_json(receipt_path)?;
+    let expected_commit = current_clean_source_commit()
+        .context("tool receipt verification requires the exact clean source commit")?;
+    match receipt.contract_version.as_str() {
+        "mutation-receipt-v1" => {
+            verify_mutation_receipt_evidence(&receipt, proof_dir, &expected_commit)?;
+        }
+        "fuzz-receipt-v1" => {
+            verify_fuzz_receipt_evidence(&receipt, proof_dir, &expected_commit)?;
+        }
+        _ => anyhow::bail!("unknown tool receipt contract version"),
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "contract_version": "tool-receipt-verification-v1",
+            "receipt_contract_version": receipt.contract_version,
+            "source_commit": expected_commit,
+            "evidence_status": receipt.status,
+            "verification_status": "verified",
+            "receipt_digest": receipt.receipt_digest,
+        }))?
+    );
     Ok(())
 }
 
@@ -1654,15 +1942,16 @@ fn directory_bytes(path: &Path) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEEP_SCALE_ATOM_COUNT, EvidenceStatusV1, FUZZ_NIGHTLY, FUZZ_RECEIPT_FILE, FUZZ_TARGETS,
-        MUTATION_LOG_STEM, MUTATION_OUTPUT_DIR, MUTATION_RECEIPT_FILE, SCALE_CORE_RECEIPT_FILE,
-        SCALE_MAX_DISK_BYTES, SCALE_MAX_RSS_BYTES, SCALE_MAX_WALL_MILLIS, SCALE_RECEIPT_FILE,
-        ScaleReceiptV1, ToolReceiptV1, ToolTargetEvidenceV1, bound_clean_source_commit,
-        classify_scale_evidence, classify_tool_evidence, clear_fuzz_evidence,
-        clear_mutation_evidence, clear_scale_evidence, fuzz_target_command,
-        mutation_target_command, publish_and_verify_scale_evidence, read_json,
-        recompute_scale_logical_digest, safe_log_stem, scale_with_output, sha256_hex,
-        verify_fuzz_receipt, verify_mutation_receipt, verify_scale_receipt,
+        DEEP_SCALE_ATOM_COUNT, EvidenceStatusV1, FUZZ_ARTIFACT_DIR, FUZZ_NIGHTLY,
+        FUZZ_RECEIPT_FILE, FUZZ_TARGETS, MUTATION_LOG_STEM, MUTATION_OUTPUT_DIR,
+        MUTATION_RECEIPT_FILE, SCALE_CORE_RECEIPT_FILE, SCALE_MAX_DISK_BYTES, SCALE_MAX_RSS_BYTES,
+        SCALE_MAX_WALL_MILLIS, SCALE_RECEIPT_FILE, ScaleReceiptV1, ToolArtifactEvidenceV1,
+        ToolReceiptV1, ToolTargetEvidenceV1, bound_clean_source_commit, classify_scale_evidence,
+        classify_tool_evidence, clear_fuzz_evidence, clear_mutation_evidence, clear_scale_evidence,
+        fuzz_target_command, mutation_target_command, preserve_fuzz_artifacts,
+        publish_and_verify_scale_evidence, read_json, recompute_scale_logical_digest,
+        safe_artifact_file_name, safe_log_stem, scale_with_output, sha256_hex, verify_fuzz_receipt,
+        verify_fuzz_receipt_evidence, verify_mutation_receipt, verify_scale_receipt,
         verify_scale_receipt_structure,
     };
     use anyhow::Context as _;
@@ -1984,6 +2273,12 @@ mod tests {
         for unsafe_stem in ["", ".", "../fuzz", "fuzz/log", "fuzz_receipt"] {
             assert!(!safe_log_stem(unsafe_stem));
         }
+        for safe_artifact in ["crash-a", "oom-123", "slow.unit"] {
+            assert!(safe_artifact_file_name(safe_artifact));
+        }
+        for unsafe_artifact in ["", ".", "..", ".crash-a", "crash/a", "crash\\a"] {
+            assert!(!safe_artifact_file_name(unsafe_artifact));
+        }
     }
 
     #[test]
@@ -1997,6 +2292,7 @@ mod tests {
             log_stem: "tool-target".to_owned(),
             stdout_digest: sha256_hex(&[]),
             stderr_digest: sha256_hex(&[]),
+            artifacts: Vec::new(),
         };
         assert_eq!(
             classify_tool_evidence(std::slice::from_ref(&target), 1, true, true),
@@ -2082,21 +2378,30 @@ mod tests {
     #[test]
     fn clearing_fuzz_evidence_removes_receipt_and_all_bound_logs() -> anyhow::Result<()> {
         let output = tempfile::tempdir()?;
+        let source_artifacts = tempfile::tempdir()?;
         let logs = output.path().join("tool-logs");
+        let retained_artifacts = output.path().join(FUZZ_ARTIFACT_DIR).join("decoder");
+        let generated_artifacts = source_artifacts.path().join("decoder");
         std::fs::create_dir_all(&logs)?;
+        std::fs::create_dir_all(&retained_artifacts)?;
+        std::fs::create_dir_all(&generated_artifacts)?;
         std::fs::write(output.path().join(FUZZ_RECEIPT_FILE), b"stale receipt")?;
+        std::fs::write(retained_artifacts.join("crash-stale"), b"stale")?;
+        std::fs::write(generated_artifacts.join("crash-stale"), b"stale")?;
         for (_, log_stem) in FUZZ_TARGETS {
             std::fs::write(logs.join(format!("{log_stem}.stdout.log")), b"stale")?;
             std::fs::write(logs.join(format!("{log_stem}.stderr.log")), b"stale")?;
         }
 
-        clear_fuzz_evidence(output.path())?;
+        clear_fuzz_evidence(output.path(), source_artifacts.path())?;
         assert!(!output.path().join(FUZZ_RECEIPT_FILE).exists());
+        assert!(!output.path().join(FUZZ_ARTIFACT_DIR).exists());
+        assert!(!source_artifacts.path().exists());
         for (_, log_stem) in FUZZ_TARGETS {
             assert!(!logs.join(format!("{log_stem}.stdout.log")).exists());
             assert!(!logs.join(format!("{log_stem}.stderr.log")).exists());
         }
-        clear_fuzz_evidence(output.path())?;
+        clear_fuzz_evidence(output.path(), source_artifacts.path())?;
         Ok(())
     }
 
@@ -2121,6 +2426,7 @@ mod tests {
                 log_stem: log_stem.to_owned(),
                 stdout_digest: sha256_hex(&stdout),
                 stderr_digest: sha256_hex(&stderr),
+                artifacts: Vec::new(),
             });
         }
         let mut receipt = ToolReceiptV1 {
@@ -2143,6 +2449,101 @@ mod tests {
             .err()
             .context("obsolete --locked fuzz command unexpectedly verified")?;
         assert!(error.to_string().contains("target or command"));
+        Ok(())
+    }
+
+    #[test]
+    fn fuzz_receipt_binds_zero_byte_crash_artifacts_and_exact_directory_closure()
+    -> anyhow::Result<()> {
+        let proof_dir = tempfile::tempdir()?;
+        let source_artifacts = tempfile::tempdir()?;
+        let logs = proof_dir.path().join("tool-logs");
+        let sqlite_source = source_artifacts.path().join("sqlite_ingest");
+        std::fs::create_dir_all(&logs)?;
+        std::fs::create_dir_all(&sqlite_source)?;
+        std::fs::write(sqlite_source.join("crash-empty"), [])?;
+        let artifacts = preserve_fuzz_artifacts(
+            source_artifacts.path(),
+            &proof_dir.path().join(FUZZ_ARTIFACT_DIR),
+            "sqlite_ingest",
+        )?;
+        assert_eq!(
+            artifacts,
+            vec![ToolArtifactEvidenceV1 {
+                relative_path: "fuzz-artifacts/sqlite_ingest/crash-empty".to_owned(),
+                byte_len: 0,
+                sha256: sha256_hex(&[]),
+            }]
+        );
+
+        let commit = "a".repeat(40);
+        let mut targets = Vec::new();
+        for (target, log_stem) in FUZZ_TARGETS {
+            let stdout = format!("{target} stdout").into_bytes();
+            let stderr = format!("{target} stderr").into_bytes();
+            std::fs::write(logs.join(format!("{log_stem}.stdout.log")), &stdout)?;
+            std::fs::write(logs.join(format!("{log_stem}.stderr.log")), &stderr)?;
+            targets.push(ToolTargetEvidenceV1 {
+                target: target.to_owned(),
+                command: fuzz_target_command(target, 120),
+                requested_duration_seconds: Some(120),
+                observed_duration_millis: 1,
+                exit_code: Some(if target == "sqlite_ingest" { 77 } else { 0 }),
+                log_stem: log_stem.to_owned(),
+                stdout_digest: sha256_hex(&stdout),
+                stderr_digest: sha256_hex(&stderr),
+                artifacts: if target == "sqlite_ingest" {
+                    artifacts.clone()
+                } else {
+                    Vec::new()
+                },
+            });
+        }
+        let mut receipt = ToolReceiptV1 {
+            contract_version: "fuzz-receipt-v1".to_owned(),
+            tool: "cargo-fuzz/libFuzzer".to_owned(),
+            tool_version: "cargo-fuzz 0.13.2".to_owned(),
+            toolchain: FUZZ_NIGHTLY.to_owned(),
+            source_commit: commit.clone(),
+            status: EvidenceStatusV1::Failed,
+            targets,
+            note: "Each of four fuzz targets requested 120 seconds.".to_owned(),
+            receipt_digest: String::new(),
+        };
+        receipt.receipt_digest = receipt.recompute_digest()?;
+        verify_fuzz_receipt_evidence(&receipt, proof_dir.path(), &commit)?;
+        let release_error = verify_fuzz_receipt(&receipt, proof_dir.path(), &commit)
+            .err()
+            .context("failed crash receipt unexpectedly passed the release gate")?;
+        assert!(release_error.to_string().contains("did not pass"));
+
+        let retained = proof_dir
+            .path()
+            .join("fuzz-artifacts/sqlite_ingest/crash-empty");
+        std::fs::write(&retained, b"tampered")?;
+        assert!(verify_fuzz_receipt_evidence(&receipt, proof_dir.path(), &commit).is_err());
+        std::fs::write(&retained, [])?;
+        std::fs::write(
+            proof_dir
+                .path()
+                .join("fuzz-artifacts/sqlite_ingest/crash-unbound"),
+            b"unbound",
+        )?;
+        let error = verify_fuzz_receipt_evidence(&receipt, proof_dir.path(), &commit)
+            .err()
+            .context("unbound fuzz artifact unexpectedly verified")?;
+        assert!(error.to_string().contains("exactly match"));
+
+        #[cfg(unix)]
+        {
+            let retained_root = proof_dir.path().join(FUZZ_ARTIFACT_DIR);
+            std::fs::remove_dir_all(&retained_root)?;
+            std::os::unix::fs::symlink(source_artifacts.path(), &retained_root)?;
+            let error = verify_fuzz_receipt_evidence(&receipt, proof_dir.path(), &commit)
+                .err()
+                .context("symlinked fuzz artifact root unexpectedly verified")?;
+            assert!(error.to_string().contains("self-contained directory"));
+        }
         Ok(())
     }
 
@@ -2177,6 +2578,7 @@ mod tests {
                 log_stem: "mutation-naome-memory-core".to_owned(),
                 stdout_digest: empty_digest.clone(),
                 stderr_digest: empty_digest,
+                artifacts: Vec::new(),
             }],
             note: "Mutation evidence covers the decision core and receipt verifier.".to_owned(),
             receipt_digest: String::new(),

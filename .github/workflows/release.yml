@@ -132,6 +132,17 @@ jobs:
         run: cargo +1.95.0 install --locked cargo-mutants --version 27.1.0
       - name: Run mutation gate
         run: cargo +1.95.0 run --release --locked -p xtask -- mutation
+      - name: Install pinned Draft 2020-12 validator
+        if: ${{ always() }}
+        run: python3 -m pip install --disable-pip-version-check --no-input --requirement .github/schema-requirements.txt
+      - name: Verify runtime and schema closure of mutation evidence
+        if: ${{ always() }}
+        run: |
+          cargo +1.95.0 run --release --locked -p xtask -- verify-tool-receipt \
+            --receipt target/proofs/mutation-receipt.json \
+            --proof-dir target/proofs
+          python3 scripts/validate_json_schemas.py \
+            --bind schemas/tool-receipt-v1.schema.json=target/proofs/mutation-receipt.json
       - name: Upload mutation evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -159,6 +170,17 @@ jobs:
         run: cargo +1.95.0 install --locked cargo-fuzz --version 0.13.2
       - name: Run four two-minute fuzz targets
         run: cargo +1.95.0 run --release --locked -p xtask -- fuzz --seconds 120
+      - name: Install pinned Draft 2020-12 validator
+        if: ${{ always() }}
+        run: python3 -m pip install --disable-pip-version-check --no-input --requirement .github/schema-requirements.txt
+      - name: Verify runtime and schema closure of fuzz evidence
+        if: ${{ always() }}
+        run: |
+          cargo +1.95.0 run --release --locked -p xtask -- verify-tool-receipt \
+            --receipt target/proofs/fuzz-receipt.json \
+            --proof-dir target/proofs
+          python3 scripts/validate_json_schemas.py \
+            --bind schemas/tool-receipt-v1.schema.json=target/proofs/fuzz-receipt.json
       - name: Upload fuzz evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -166,6 +188,7 @@ jobs:
           name: release-evidence-fuzz-${{ github.sha }}
           path: target/proofs/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 90
 
   verify-proof:
@@ -296,6 +319,11 @@ jobs:
           cp target/release-proof/mutation-receipt.json release-assets/mutation-receipt.json
           cp target/release-proof/fuzz-receipt.json release-assets/fuzz-receipt.json
           cp target/release-proof/tool-logs/* release-assets/
+          mkdir -p target/release-proof/fuzz-artifacts
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf release-assets/tool-evidence-v1.tar.gz \
+            -C target/release-proof \
+            mutation-receipt.json fuzz-receipt.json tool-logs fuzz-artifacts
           (cd release-assets && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum) > /tmp/naome-memory-checksums
           mv /tmp/naome-memory-checksums release-assets/SHA256SUMS
       - name: Attest release artifacts
