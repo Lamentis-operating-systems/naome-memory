@@ -322,3 +322,336 @@ const fn relation_kind_key(kind: MemoryRelationKindV1) -> u8 {
         MemoryRelationKindV1::DerivedFrom => 4,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ActionRecordV1, AtomId, BeliefV1, ConsolidationScoreV1, DecisionRecordV1, Digest32,
+        EpisodePayloadV1, FeedbackSignalV1, FormationSignalsV1, InterpretationV1, MemoryPayloadV1,
+        MemoryRelationV1, ObservationV1, OutcomeV1, Ppm, ProvenanceV1, RejectedAlternativeV1,
+        SealReasonV1, SemanticPayloadV1, TimeIntervalV1,
+    };
+    use std::collections::BTreeMap;
+
+    fn scope() -> MemoryScopeV1 {
+        MemoryScopeV1 {
+            memory_space_id: "space-a".to_owned(),
+            repository_id: Some("repo-a".to_owned()),
+            task_id: Some("task-a".to_owned()),
+            agent_id: Some("agent-a".to_owned()),
+            session_id: "session-a".to_owned(),
+        }
+    }
+
+    fn episode_body(policy: &PolicyV1) -> Result<MemoryAtomBodyV1> {
+        Ok(MemoryAtomBodyV1 {
+            contract_version: "atom-v1".to_owned(),
+            scope: scope(),
+            interval: TimeIntervalV1 {
+                started_at_us: 10,
+                ended_at_us: 10,
+                recorded_at_us: 11,
+            },
+            trigger: "validation-boundary".to_owned(),
+            seal_reason: SealReasonV1::Checkpoint,
+            goal: None,
+            plan: Vec::new(),
+            internal_state_before: BTreeMap::new(),
+            internal_state_after: BTreeMap::new(),
+            observations: vec![ObservationV1 {
+                at_us: 10,
+                source: "validation-test".to_owned(),
+                content: "x".to_owned(),
+                artifact_digest: None,
+            }],
+            interpretations: Vec::new(),
+            beliefs: Vec::new(),
+            decisions: Vec::new(),
+            rejected_alternatives: Vec::new(),
+            actions: Vec::new(),
+            outcome: None,
+            feedback: Vec::new(),
+            formation_signals: FormationSignalsV1::default(),
+            topic_keys: BTreeSet::new(),
+            entity_ids: BTreeSet::new(),
+            outcome_class: None,
+            goal_key: None,
+            provenance: ProvenanceV1 {
+                producer: "validation-boundary-test".to_owned(),
+                source_event_digests: vec![Digest32::hash_prefixed(b"event\0", b"0")],
+                policy_digest: policy.digest()?,
+            },
+            relations: Vec::new(),
+            artifacts: Vec::new(),
+            retention_permission: RetentionPermissionV1::TransientOnly,
+            payload: MemoryPayloadV1::Episode(EpisodePayloadV1 {
+                event_sequence_start: 0,
+                event_sequence_end: 0,
+                continues: None,
+            }),
+        })
+    }
+
+    fn semantic_body(policy: &PolicyV1) -> Result<MemoryAtomBodyV1> {
+        let source_ids = (1_u8..=3)
+            .map(|value| AtomId(Digest32([value; 32])))
+            .collect::<Vec<_>>();
+        Ok(MemoryAtomBodyV1 {
+            contract_version: "atom-v1".to_owned(),
+            scope: scope(),
+            interval: TimeIntervalV1 {
+                started_at_us: 10,
+                ended_at_us: 20,
+                recorded_at_us: 30,
+            },
+            trigger: "retirement".to_owned(),
+            seal_reason: SealReasonV1::Timeout,
+            goal: None,
+            plan: Vec::new(),
+            internal_state_before: BTreeMap::new(),
+            internal_state_after: BTreeMap::new(),
+            observations: Vec::new(),
+            interpretations: Vec::new(),
+            beliefs: Vec::new(),
+            decisions: Vec::new(),
+            rejected_alternatives: Vec::new(),
+            actions: Vec::new(),
+            outcome: None,
+            feedback: Vec::new(),
+            formation_signals: FormationSignalsV1::default(),
+            topic_keys: BTreeSet::from(["memory".to_owned()]),
+            entity_ids: BTreeSet::from(["naome".to_owned()]),
+            outcome_class: None,
+            goal_key: None,
+            provenance: ProvenanceV1 {
+                producer: "validation-boundary-test".to_owned(),
+                source_event_digests: source_ids.iter().map(|source| source.digest()).collect(),
+                policy_digest: policy.digest()?,
+            },
+            relations: source_ids
+                .iter()
+                .copied()
+                .map(|target| MemoryRelationV1 {
+                    kind: MemoryRelationKindV1::DerivedFrom,
+                    target,
+                })
+                .collect(),
+            artifacts: Vec::new(),
+            retention_permission: RetentionPermissionV1::SemanticAllowed,
+            payload: MemoryPayloadV1::Semantic(SemanticPayloadV1 {
+                source_body_digests: source_ids
+                    .iter()
+                    .copied()
+                    .map(|source| (source, source.digest()))
+                    .collect(),
+                source_ids,
+                score: ConsolidationScoreV1 {
+                    support: Ppm::ONE,
+                    diversity: Ppm::ONE,
+                    utility: Ppm::ONE,
+                    salience: Ppm::ONE,
+                    cohesion: Ppm::ONE,
+                    novelty: Ppm::ONE,
+                    uncertainty: Ppm::ZERO,
+                    total: Ppm::ONE,
+                },
+                consensus_numerator: policy.consensus_numerator,
+                consensus_denominator: policy.consensus_denominator,
+                supersedes: None,
+            }),
+        })
+    }
+
+    #[test]
+    fn inclusive_time_and_byte_limits_are_accepted() -> Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let time_boundary = episode_body(&policy)?;
+        validate_memory_atom_body(&time_boundary, &policy)?;
+
+        let mut body_boundary = episode_body(&policy)?;
+        let initial_size = body_boundary.encoded_size_bytes()?;
+        let padding = policy.atom_hard_max_bytes.checked_sub(initial_size).ok_or(
+            MemoryError::InvalidAtomBody("test atom unexpectedly exceeds hard maximum"),
+        )?;
+        body_boundary.observations[0].content.push_str(&"x".repeat(
+            usize::try_from(padding).map_err(|_| {
+                MemoryError::CanonicalEncoding("test padding exceeds usize".to_owned())
+            })?,
+        ));
+        assert_eq!(
+            body_boundary.encoded_size_bytes()?,
+            policy.atom_hard_max_bytes
+        );
+        validate_memory_atom_body(&body_boundary, &policy)?;
+
+        let mut exact_package_boundary = episode_body(&policy)?;
+        exact_package_boundary.retention_permission =
+            RetentionPermissionV1::SemanticAndExactAllowed;
+        exact_package_boundary.artifacts.push(ArtifactRefV1 {
+            digest: Digest32([7; 32]),
+            size_bytes: 0,
+            media_type: "application/octet-stream".to_owned(),
+            retention_allowed: true,
+            inline_payload: None,
+        });
+        let encoded_size = exact_package_boundary.encoded_size_bytes()?;
+        exact_package_boundary.artifacts[0].size_bytes = policy
+            .exact_package_max_bytes
+            .checked_sub(encoded_size)
+            .ok_or(MemoryError::InvalidAtomBody(
+                "test atom unexpectedly exceeds exact-package maximum",
+            ))?;
+        assert_eq!(
+            exact_package_boundary.exact_package_bytes()?,
+            policy.exact_package_max_bytes
+        );
+        validate_memory_atom_body(&exact_package_boundary, &policy)?;
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_and_inline_limits_are_inclusive() -> Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let mut artifact_boundary = episode_body(&policy)?;
+        artifact_boundary.artifacts.push(ArtifactRefV1 {
+            digest: Digest32([8; 32]),
+            size_bytes: policy.artifact_max_bytes,
+            media_type: "application/octet-stream".to_owned(),
+            retention_allowed: false,
+            inline_payload: None,
+        });
+        validate_memory_atom_body(&artifact_boundary, &policy)?;
+
+        let inline = vec![
+            0_u8;
+            usize::try_from(policy.inline_payload_max_bytes).map_err(|_| {
+                MemoryError::CanonicalEncoding("inline maximum exceeds usize".to_owned())
+            })?
+        ];
+        let mut inline_boundary = episode_body(&policy)?;
+        inline_boundary.artifacts.push(ArtifactRefV1 {
+            digest: Digest32::hash_prefixed(&[], &inline),
+            size_bytes: policy.inline_payload_max_bytes,
+            media_type: "application/octet-stream".to_owned(),
+            retention_allowed: false,
+            inline_payload: Some(inline),
+        });
+        validate_memory_atom_body(&inline_boundary, &policy)?;
+        Ok(())
+    }
+
+    #[test]
+    fn every_forbidden_semantic_episode_field_is_independently_rejected() -> Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let baseline = semantic_body(&policy)?;
+        let mutations: [fn(&mut MemoryAtomBodyV1); 9] = [
+            |body| {
+                body.observations.push(ObservationV1 {
+                    at_us: 10,
+                    source: "forbidden".to_owned(),
+                    content: "observation".to_owned(),
+                    artifact_digest: None,
+                });
+            },
+            |body| {
+                body.interpretations.push(InterpretationV1 {
+                    content: "interpretation".to_owned(),
+                    confidence: Ppm::ONE,
+                    evidence: Vec::new(),
+                });
+            },
+            |body| {
+                body.beliefs.push(BeliefV1 {
+                    proposition: "belief".to_owned(),
+                    confidence: Ppm::ONE,
+                    evidence: Vec::new(),
+                });
+            },
+            |body| {
+                body.decisions.push(DecisionRecordV1 {
+                    decision: "decision".to_owned(),
+                    rationale: "rationale".to_owned(),
+                });
+            },
+            |body| {
+                body.rejected_alternatives.push(RejectedAlternativeV1 {
+                    alternative: "alternative".to_owned(),
+                    reason: "reason".to_owned(),
+                });
+            },
+            |body| {
+                body.actions.push(ActionRecordV1 {
+                    action: "action".to_owned(),
+                    result: None,
+                });
+            },
+            |body| {
+                body.outcome = Some(OutcomeV1 {
+                    class: "success".to_owned(),
+                    summary: "outcome".to_owned(),
+                    succeeded: true,
+                });
+            },
+            |body| {
+                body.feedback.push(FeedbackSignalV1 {
+                    source: "feedback".to_owned(),
+                    positive: true,
+                    note: None,
+                });
+            },
+            |body| {
+                body.artifacts.push(ArtifactRefV1 {
+                    digest: Digest32([9; 32]),
+                    size_bytes: 1,
+                    media_type: "application/octet-stream".to_owned(),
+                    retention_allowed: false,
+                    inline_payload: None,
+                });
+            },
+        ];
+
+        for mutate in mutations {
+            let mut changed = baseline.clone();
+            mutate(&mut changed);
+            assert_eq!(
+                validate_memory_atom_body(&changed, &policy),
+                Err(MemoryError::InvalidAtomBody(
+                    "semantic atoms may contain only deterministic structured consolidation fields"
+                ))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_source_order_is_strict_and_supersession_count_is_additive() -> Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let baseline = semantic_body(&policy)?;
+
+        let mut duplicate = baseline.clone();
+        let MemoryPayloadV1::Semantic(payload) = &mut duplicate.payload else {
+            return Err(MemoryError::InvalidAtomBody("expected semantic payload"));
+        };
+        payload.source_ids[1] = payload.source_ids[0];
+        assert_eq!(
+            validate_memory_atom_body(&duplicate, &policy),
+            Err(MemoryError::InvalidAtomBody(
+                "semantic source IDs must be unique and sorted"
+            ))
+        );
+
+        let superseded = AtomId(Digest32([10; 32]));
+        let mut with_supersession = baseline;
+        let MemoryPayloadV1::Semantic(payload) = &mut with_supersession.payload else {
+            return Err(MemoryError::InvalidAtomBody("expected semantic payload"));
+        };
+        payload.supersedes = Some(superseded);
+        with_supersession.relations.push(MemoryRelationV1 {
+            kind: MemoryRelationKindV1::Supersedes,
+            target: superseded,
+        });
+        validate_memory_atom_body(&with_supersession, &policy)?;
+        Ok(())
+    }
+}

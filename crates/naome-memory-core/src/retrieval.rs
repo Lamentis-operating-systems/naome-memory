@@ -373,3 +373,277 @@ const fn generality(kind: MemoryKindV1) -> GeneralityV1 {
         MemoryKindV1::Semantic => GeneralityV1::Semantic,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        EpisodePayloadV1, FormationSignalsV1, MemoryPayloadV1, MemoryScopeV1, ObservationV1,
+        ProvenanceV1, RetentionPermissionV1, SealReasonV1, TimeIntervalV1,
+    };
+    use std::collections::BTreeMap;
+
+    fn episode_body(index: u64, recorded_at_us: u64) -> crate::Result<MemoryAtomBodyV1> {
+        let policy = PolicyV1::poc_v1();
+        Ok(MemoryAtomBodyV1 {
+            contract_version: "atom-v1".to_owned(),
+            scope: MemoryScopeV1 {
+                memory_space_id: "space-a".to_owned(),
+                repository_id: Some("repo-a".to_owned()),
+                task_id: Some("task-a".to_owned()),
+                agent_id: Some("agent-a".to_owned()),
+                session_id: format!("session-{index}"),
+            },
+            interval: TimeIntervalV1 {
+                started_at_us: recorded_at_us,
+                ended_at_us: recorded_at_us,
+                recorded_at_us,
+            },
+            trigger: "query-boundary".to_owned(),
+            seal_reason: SealReasonV1::Checkpoint,
+            goal: None,
+            plan: Vec::new(),
+            internal_state_before: BTreeMap::new(),
+            internal_state_after: BTreeMap::new(),
+            observations: vec![ObservationV1 {
+                at_us: recorded_at_us,
+                source: "retrieval-test".to_owned(),
+                content: format!("observation-{index}"),
+                artifact_digest: None,
+            }],
+            interpretations: Vec::new(),
+            beliefs: Vec::new(),
+            decisions: Vec::new(),
+            rejected_alternatives: Vec::new(),
+            actions: Vec::new(),
+            outcome: None,
+            feedback: Vec::new(),
+            formation_signals: FormationSignalsV1::default(),
+            topic_keys: BTreeSet::from(["memory".to_owned()]),
+            entity_ids: BTreeSet::from(["naome".to_owned()]),
+            outcome_class: None,
+            goal_key: None,
+            provenance: ProvenanceV1 {
+                producer: "retrieval-boundary-test".to_owned(),
+                source_event_digests: vec![Digest32::hash_prefixed(
+                    b"retrieval-event\0",
+                    &index.to_be_bytes(),
+                )],
+                policy_digest: policy.digest()?,
+            },
+            relations: Vec::new(),
+            artifacts: Vec::new(),
+            retention_permission: RetentionPermissionV1::SemanticAndExactAllowed,
+            payload: MemoryPayloadV1::Episode(EpisodePayloadV1 {
+                event_sequence_start: index,
+                event_sequence_end: index,
+                continues: None,
+            }),
+        })
+    }
+
+    fn state(tier: RetentionTierV1) -> AtomStateV1 {
+        AtomStateV1 {
+            retention_tier: tier,
+            content_status: ContentStatusV1::Present,
+            expires_at_us: None,
+            superseded_by: None,
+            feedback_positive: 0,
+            feedback_negative: 0,
+            retrieval_count: 0,
+            retirement_run_id: None,
+        }
+    }
+
+    fn candidate(index: u64, recorded_at_us: u64) -> crate::Result<RetrievalCandidateV1> {
+        let body = episode_body(index, recorded_at_us)?;
+        Ok(RetrievalCandidateV1 {
+            atom_id: body.atom_id()?,
+            body,
+            state: state(RetentionTierV1::ShortTerm),
+            lexical_score: Ppm::from_raw_unchecked(500_000),
+            integrity: IntegrityStatusV1::Complete,
+        })
+    }
+
+    fn query(as_of_us: u64) -> RetrievalQueryV1 {
+        RetrievalQueryV1 {
+            contract_version: "retrieval-query-v1".to_owned(),
+            memory_space_id: "space-a".to_owned(),
+            repository_id: Some("repo-a".to_owned()),
+            memory_space_wide: false,
+            as_of_us,
+            terms: vec!["memory".to_owned()],
+            topic_keys: BTreeSet::from(["memory".to_owned()]),
+            entity_ids: BTreeSet::from(["naome".to_owned()]),
+            k: None,
+            spontaneous: None,
+        }
+    }
+
+    #[test]
+    fn inclusive_public_limits_are_accepted() -> crate::Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let mut boundary_query = query(1_000);
+        boundary_query.k = Some(policy.retrieval_max_k);
+        let ranked = (0_u64..u64::try_from(policy.retrieval_candidate_max).unwrap_or(u64::MAX))
+            .map(|index| candidate(index, index))
+            .collect::<crate::Result<Vec<_>>>()?;
+        let result = rank_retrieval(
+            &boundary_query,
+            &RetrievalCandidatesV1 {
+                ranked,
+                episodic_pool: Vec::new(),
+            },
+            &policy,
+        )?;
+        assert_eq!(result.hits.len(), policy.retrieval_max_k);
+
+        boundary_query.spontaneous = Some(SpontaneousRecallRequestV1 {
+            seed: Seed32::new([7; 32]),
+            budget: policy.flashback_budget_max,
+        });
+        let result = rank_retrieval(
+            &boundary_query,
+            &RetrievalCandidatesV1 {
+                ranked: Vec::new(),
+                episodic_pool: Vec::new(),
+            },
+            &policy,
+        )?;
+        assert_eq!(
+            result.spontaneous.map(|recall| recall.budget),
+            Some(policy.flashback_budget_max)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_time_equal_to_query_time_is_not_future() -> crate::Result<()> {
+        let candidate = candidate(1, 42)?;
+        let result = rank_retrieval(
+            &query(42),
+            &RetrievalCandidatesV1 {
+                ranked: vec![candidate.clone()],
+                episodic_pool: Vec::new(),
+            },
+            &PolicyV1::poc_v1(),
+        )?;
+        assert_eq!(result.hits[0].atom_id, candidate.atom_id);
+        Ok(())
+    }
+
+    #[test]
+    fn body_presence_and_header_tier_are_independent_requirements() -> crate::Result<()> {
+        let mut header_only = candidate(1, 1)?;
+        header_only.state.retention_tier = RetentionTierV1::HeaderOnly;
+        assert!(matches!(
+            validate_candidate(&header_only),
+            Err(MemoryError::InvalidRetrievalCandidate { .. })
+        ));
+
+        let mut forgotten = candidate(2, 2)?;
+        forgotten.state.content_status = ContentStatusV1::Forgotten;
+        assert!(matches!(
+            validate_candidate(&forgotten),
+            Err(MemoryError::InvalidRetrievalCandidate { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_kind_accepts_only_the_semantic_long_term_tier() -> crate::Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let source_ids = (1_u8..=3)
+            .map(|value| AtomId(Digest32([value; 32])))
+            .collect::<Vec<_>>();
+        let mut body = episode_body(1, 1)?;
+        body.observations.clear();
+        body.provenance.source_event_digests =
+            source_ids.iter().map(|source| source.digest()).collect();
+        body.relations = source_ids
+            .iter()
+            .copied()
+            .map(|target| crate::MemoryRelationV1 {
+                kind: crate::MemoryRelationKindV1::DerivedFrom,
+                target,
+            })
+            .collect();
+        body.retention_permission = RetentionPermissionV1::SemanticAllowed;
+        body.payload = MemoryPayloadV1::Semantic(crate::SemanticPayloadV1 {
+            source_body_digests: source_ids
+                .iter()
+                .copied()
+                .map(|source| (source, source.digest()))
+                .collect(),
+            source_ids,
+            score: crate::ConsolidationScoreV1 {
+                support: Ppm::ZERO,
+                diversity: Ppm::ZERO,
+                utility: Ppm::ZERO,
+                salience: Ppm::ZERO,
+                cohesion: Ppm::ZERO,
+                novelty: Ppm::ZERO,
+                uncertainty: Ppm::ZERO,
+                total: Ppm::ZERO,
+            },
+            consensus_numerator: 2,
+            consensus_denominator: 3,
+            supersedes: None,
+        });
+        crate::validate_memory_atom_body(&body, &policy)?;
+
+        let mut semantic = RetrievalCandidateV1 {
+            atom_id: body.atom_id()?,
+            body,
+            state: state(RetentionTierV1::SemanticLongTerm),
+            lexical_score: Ppm::from_raw_unchecked(500_000),
+            integrity: IntegrityStatusV1::Complete,
+        };
+        validate_candidate(&semantic)?;
+
+        semantic.state.retention_tier = RetentionTierV1::ShortTerm;
+        assert!(matches!(
+            validate_candidate(&semantic),
+            Err(MemoryError::InvalidRetrievalCandidate { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn recency_boundaries_and_arithmetic_are_exact() {
+        assert_eq!(recency_score(10, 11, 10), Ppm::ZERO);
+        assert_eq!(recency_score(10, 9, 0), Ppm::ZERO);
+        assert_eq!(recency_score(10, 10, 10), Ppm::ONE);
+        assert_eq!(recency_score(10, 0, 10), Ppm::ZERO);
+        assert_eq!(recency_score(10, 4, 10).get(), 400_000);
+    }
+
+    #[test]
+    fn set_similarity_and_score_sum_preserve_nonzero_evidence() {
+        assert_eq!(jaccard(&BTreeSet::new(), &BTreeSet::new()), Ppm::ZERO);
+        assert_eq!(
+            jaccard(
+                &BTreeSet::from(["a".to_owned(), "b".to_owned()]),
+                &BTreeSet::from(["b".to_owned(), "c".to_owned()]),
+            )
+            .get(),
+            333_333
+        );
+        assert_eq!(
+            sum_scores([
+                Ppm::from_raw_unchecked(100_000),
+                Ppm::from_raw_unchecked(200_000),
+            ])
+            .get(),
+            300_000
+        );
+        assert_eq!(
+            sum_scores([
+                Ppm::from_raw_unchecked(600_000),
+                Ppm::from_raw_unchecked(500_000),
+            ]),
+            Ppm::ONE
+        );
+    }
+}

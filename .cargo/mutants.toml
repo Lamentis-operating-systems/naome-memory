@@ -1,0 +1,5 @@
+# Diagnostic formatting is not part of canonical bytes, decisions, or proof authority.
+exclude_re = [
+  "<impl fmt::Debug for Digest32>::fmt",
+  "<impl Visitor<'_> for DigestVisitor>::expecting",
+]

@@ -2,7 +2,7 @@ use crate::{
     AtomId, CanonicalBytes as _, ContentStatusV1, Digest32, MemoryError, MemoryKindV1,
     PlannedSemanticAtomV1, PolicyV1, RetentionTierV1, RetirementDecisionV1, RetirementPlanV1,
     RetirementSnapshotV1, Seed32, SemanticCandidateDecisionV1, SemanticCandidateDispositionV1,
-    plan_retirement,
+    plan_retirement, validate_memory_atom_body,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -389,9 +389,7 @@ pub fn verify_plan_structure(plan: &RetirementPlanV1) -> crate::Result<()> {
         || plan.episodic_winner_budget != expected_episodic_budget
         || plan.episodic_winners.len() != plan.episodic_winner_budget
         || plan.semantic_count_budget != expected_semantic_budget
-        || plan.semantic_atoms.len() > plan.semantic_count_budget
         || plan.semantic_body_bytes != semantic_body_bytes
-        || plan.semantic_body_bytes > policy.semantic_body_budget_bytes
         || plan.episodic_winner_bytes > policy.episodic_pin_budget_bytes
     {
         return Err(MemoryError::ReceiptRejected(
@@ -494,7 +492,10 @@ fn ensure_sorted_unique_decisions(decisions: &[RetirementDecisionV1]) -> crate::
     Ok(())
 }
 
-fn ensure_semantic_atoms(semantic_atoms: &[PlannedSemanticAtomV1]) -> crate::Result<()> {
+fn ensure_semantic_atoms(
+    semantic_atoms: &[PlannedSemanticAtomV1],
+    policy: &PolicyV1,
+) -> crate::Result<()> {
     let mut atom_ids = BTreeSet::new();
     for semantic in semantic_atoms {
         if !atom_ids.insert(semantic.atom_id) {
@@ -502,6 +503,7 @@ fn ensure_semantic_atoms(semantic_atoms: &[PlannedSemanticAtomV1]) -> crate::Res
                 "semantic atom id occurs more than once",
             ));
         }
+        validate_memory_atom_body(&semantic.body, policy)?;
         if semantic.body.contract_version != "atom-v1"
             || semantic.body.atom_id()? != semantic.atom_id
             || semantic.body_digest != semantic.atom_id.digest()
@@ -521,7 +523,7 @@ fn ensure_semantic_evidence(
     count_budget: usize,
     policy: &PolicyV1,
 ) -> crate::Result<()> {
-    ensure_semantic_atoms(semantic_atoms)?;
+    ensure_semantic_atoms(semantic_atoms, policy)?;
     let mut candidate_ids = BTreeSet::new();
     for decision in decisions {
         if !candidate_ids.insert(decision.atom_id) {
@@ -554,20 +556,13 @@ fn ensure_semantic_evidence(
     let mut selected_bytes = 0_u64;
     let mut selected_index = 0_usize;
     for decision in decisions {
-        let next_bytes = selected_bytes
-            .checked_add(decision.canonical_size_bytes)
-            .ok_or(MemoryError::ReceiptRejected(
-                "semantic candidate byte count overflow",
-            ))?;
-        let expected = if decision.canonical_size_bytes > policy.atom_hard_max_bytes {
-            SemanticCandidateDispositionV1::SkippedAtomHardLimit
-        } else if selected_count >= count_budget {
-            SemanticCandidateDispositionV1::SkippedCountBudget
-        } else if next_bytes > policy.semantic_body_budget_bytes {
-            SemanticCandidateDispositionV1::SkippedByteBudget
-        } else {
-            SemanticCandidateDispositionV1::Selected
-        };
+        let (expected, next_bytes) = expected_semantic_disposition(
+            decision.canonical_size_bytes,
+            selected_count,
+            selected_bytes,
+            count_budget,
+            policy,
+        )?;
         if decision.disposition != expected {
             return Err(MemoryError::ReceiptRejected(
                 "semantic candidate disposition does not follow policy budgets",
@@ -610,6 +605,31 @@ fn ensure_semantic_evidence(
     Ok(())
 }
 
+fn expected_semantic_disposition(
+    candidate_bytes: u64,
+    selected_count: usize,
+    selected_bytes: u64,
+    count_budget: usize,
+    policy: &PolicyV1,
+) -> crate::Result<(SemanticCandidateDispositionV1, u64)> {
+    let next_bytes =
+        selected_bytes
+            .checked_add(candidate_bytes)
+            .ok_or(MemoryError::ReceiptRejected(
+                "semantic candidate byte count overflow",
+            ))?;
+    let disposition = if candidate_bytes > policy.atom_hard_max_bytes {
+        SemanticCandidateDispositionV1::SkippedAtomHardLimit
+    } else if selected_count >= count_budget {
+        SemanticCandidateDispositionV1::SkippedCountBudget
+    } else if next_bytes > policy.semantic_body_budget_bytes {
+        SemanticCandidateDispositionV1::SkippedByteBudget
+    } else {
+        SemanticCandidateDispositionV1::Selected
+    };
+    Ok((disposition, next_bytes))
+}
+
 fn invariant_map() -> BTreeMap<String, InvariantStatusV1> {
     [
         "budgets_structurally_bounded",
@@ -629,4 +649,349 @@ fn normalize_artifacts(
         digests.dedup();
     }
     artifacts
+}
+
+#[cfg(test)]
+mod mutation_tests {
+    use super::*;
+    use crate::{
+        ConsolidationScoreV1, FormationSignalsV1, MemoryAtomBodyV1, MemoryPayloadV1,
+        MemoryRelationKindV1, MemoryRelationV1, MemoryScopeV1, Ppm, ProvenanceV1,
+        RetentionPermissionV1, SealReasonV1, SemanticPayloadV1, TimeIntervalV1,
+    };
+
+    fn test_atom_id(label: &[u8]) -> AtomId {
+        AtomId(Digest32::hash_prefixed(
+            b"naome-memory:receipt-mutation-test:v1\0",
+            label,
+        ))
+    }
+
+    fn source_ids(namespace: u8) -> Vec<AtomId> {
+        let mut ids = (0_u8..3)
+            .map(|index| test_atom_id(&[namespace, index]))
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    }
+
+    fn score(total: u32) -> ConsolidationScoreV1 {
+        ConsolidationScoreV1 {
+            support: Ppm::ZERO,
+            diversity: Ppm::ZERO,
+            utility: Ppm::ZERO,
+            salience: Ppm::ZERO,
+            cohesion: Ppm::ZERO,
+            novelty: Ppm::ZERO,
+            uncertainty: Ppm::ZERO,
+            total: Ppm::from_raw_unchecked(total),
+        }
+    }
+
+    fn planned_semantic(index: u8) -> crate::Result<PlannedSemanticAtomV1> {
+        let policy = PolicyV1::poc_v1();
+        let sources = source_ids(index);
+        let semantic_score = score(700_000);
+        let body = MemoryAtomBodyV1 {
+            contract_version: "atom-v1".to_owned(),
+            scope: MemoryScopeV1 {
+                memory_space_id: "space-a".to_owned(),
+                repository_id: Some("repo-a".to_owned()),
+                task_id: Some("task-a".to_owned()),
+                agent_id: Some("agent-a".to_owned()),
+                session_id: format!("semantic-{index}"),
+            },
+            interval: TimeIntervalV1 {
+                started_at_us: 1,
+                ended_at_us: 2,
+                recorded_at_us: 3,
+            },
+            trigger: "semantic".to_owned(),
+            seal_reason: SealReasonV1::Checkpoint,
+            goal: Some(format!("semantic-{index}")),
+            plan: Vec::new(),
+            internal_state_before: BTreeMap::new(),
+            internal_state_after: BTreeMap::new(),
+            observations: Vec::new(),
+            interpretations: Vec::new(),
+            beliefs: Vec::new(),
+            decisions: Vec::new(),
+            rejected_alternatives: Vec::new(),
+            actions: Vec::new(),
+            outcome: None,
+            feedback: Vec::new(),
+            formation_signals: FormationSignalsV1::default(),
+            topic_keys: BTreeSet::new(),
+            entity_ids: BTreeSet::new(),
+            outcome_class: None,
+            goal_key: None,
+            provenance: ProvenanceV1 {
+                producer: "receipt-mutation-test".to_owned(),
+                source_event_digests: sources.iter().map(|source| source.digest()).collect(),
+                policy_digest: policy.digest()?,
+            },
+            relations: sources
+                .iter()
+                .copied()
+                .map(|target| MemoryRelationV1 {
+                    kind: MemoryRelationKindV1::DerivedFrom,
+                    target,
+                })
+                .collect(),
+            artifacts: Vec::new(),
+            retention_permission: RetentionPermissionV1::SemanticAllowed,
+            payload: MemoryPayloadV1::Semantic(SemanticPayloadV1 {
+                source_body_digests: sources
+                    .iter()
+                    .copied()
+                    .map(|source_id| (source_id, source_id.digest()))
+                    .collect(),
+                source_ids: sources,
+                score: semantic_score,
+                consensus_numerator: policy.consensus_numerator,
+                consensus_denominator: policy.consensus_denominator,
+                supersedes: None,
+            }),
+        };
+        validate_memory_atom_body(&body, &policy)?;
+        let atom_id = body.atom_id()?;
+        Ok(PlannedSemanticAtomV1 {
+            atom_id,
+            body_digest: atom_id.digest(),
+            canonical_size_bytes: body.encoded_size_bytes()?,
+            body,
+        })
+    }
+
+    fn decision_for(
+        semantic: &PlannedSemanticAtomV1,
+        disposition: SemanticCandidateDispositionV1,
+    ) -> SemanticCandidateDecisionV1 {
+        let MemoryPayloadV1::Semantic(payload) = &semantic.body.payload else {
+            return SemanticCandidateDecisionV1 {
+                atom_id: semantic.atom_id,
+                source_ids: Vec::new(),
+                score: score(0),
+                canonical_size_bytes: semantic.canonical_size_bytes,
+                disposition,
+            };
+        };
+        SemanticCandidateDecisionV1 {
+            atom_id: semantic.atom_id,
+            source_ids: payload.source_ids.clone(),
+            score: payload.score,
+            canonical_size_bytes: semantic.canonical_size_bytes,
+            disposition,
+        }
+    }
+
+    fn skipped_decision(
+        atom_id: AtomId,
+        total: u32,
+        policy: &PolicyV1,
+    ) -> SemanticCandidateDecisionV1 {
+        SemanticCandidateDecisionV1 {
+            atom_id,
+            source_ids: source_ids(7),
+            score: score(total),
+            canonical_size_bytes: policy.atom_hard_max_bytes.saturating_add(1),
+            disposition: SemanticCandidateDispositionV1::SkippedAtomHardLimit,
+        }
+    }
+
+    #[test]
+    fn semantic_atom_authority_checks_each_field_independently() -> crate::Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let semantic = planned_semantic(1)?;
+        assert_eq!(
+            ensure_semantic_atoms(std::slice::from_ref(&semantic), &policy),
+            Ok(())
+        );
+
+        let mut wrong_policy = semantic.clone();
+        wrong_policy.body.provenance.policy_digest = Digest32::ZERO;
+        wrong_policy.atom_id = wrong_policy.body.atom_id()?;
+        wrong_policy.body_digest = wrong_policy.atom_id.digest();
+        wrong_policy.canonical_size_bytes = wrong_policy.body.encoded_size_bytes()?;
+        assert_eq!(
+            ensure_semantic_atoms(&[wrong_policy], &policy),
+            Err(MemoryError::PolicyMismatch)
+        );
+
+        let mut wrong_contract = semantic.clone();
+        wrong_contract.body.contract_version = "atom-v2".to_owned();
+        wrong_contract.atom_id = wrong_contract.body.atom_id()?;
+        wrong_contract.body_digest = wrong_contract.atom_id.digest();
+        wrong_contract.canonical_size_bytes = wrong_contract.body.encoded_size_bytes()?;
+        assert!(matches!(
+            ensure_semantic_atoms(&[wrong_contract], &policy),
+            Err(MemoryError::UnknownVersion(_))
+        ));
+
+        let mut wrong_body_authority = semantic.clone();
+        wrong_body_authority.body.trigger = "episodic".to_owned();
+
+        let mut wrong_digest = semantic.clone();
+        wrong_digest.body_digest = Digest32::ZERO;
+
+        let mut wrong_size = semantic;
+        wrong_size.canonical_size_bytes = wrong_size.canonical_size_bytes.saturating_add(1);
+
+        for changed in [wrong_body_authority, wrong_digest, wrong_size] {
+            assert_eq!(
+                ensure_semantic_atoms(&[changed], &policy),
+                Err(MemoryError::ReceiptRejected(
+                    "semantic atom authority mismatch"
+                ))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_candidate_ordering_covers_score_and_atom_ties() {
+        let policy = PolicyV1::poc_v1();
+        let mut atom_ids = [test_atom_id(b"candidate-a"), test_atom_id(b"candidate-b")];
+        atom_ids.sort_unstable();
+        let [low, high] = atom_ids;
+
+        let descending_score = [
+            skipped_decision(high, 700_000, &policy),
+            skipped_decision(low, 600_000, &policy),
+        ];
+        assert_eq!(
+            ensure_semantic_evidence(&descending_score, &[], 2, &policy),
+            Ok(())
+        );
+
+        let increasing_score = [
+            skipped_decision(low, 600_000, &policy),
+            skipped_decision(high, 700_000, &policy),
+        ];
+        assert_eq!(
+            ensure_semantic_evidence(&increasing_score, &[], 2, &policy),
+            Err(MemoryError::ReceiptRejected(
+                "semantic candidates are not ordered by score then atom id"
+            ))
+        );
+
+        let equal_score_ordered = [
+            skipped_decision(low, 600_000, &policy),
+            skipped_decision(high, 600_000, &policy),
+        ];
+        assert_eq!(
+            ensure_semantic_evidence(&equal_score_ordered, &[], 2, &policy),
+            Ok(())
+        );
+
+        let equal_score_reversed = [
+            skipped_decision(high, 600_000, &policy),
+            skipped_decision(low, 600_000, &policy),
+        ];
+        assert_eq!(
+            ensure_semantic_evidence(&equal_score_reversed, &[], 2, &policy),
+            Err(MemoryError::ReceiptRejected(
+                "semantic candidates are not ordered by score then atom id"
+            ))
+        );
+    }
+
+    #[test]
+    fn semantic_disposition_covers_all_exact_policy_boundaries() {
+        let policy = PolicyV1::poc_v1();
+        assert_eq!(
+            expected_semantic_disposition(policy.atom_hard_max_bytes, 0, 0, 1, &policy),
+            Ok((
+                SemanticCandidateDispositionV1::Selected,
+                policy.atom_hard_max_bytes
+            ))
+        );
+        assert_eq!(
+            expected_semantic_disposition(
+                policy.atom_hard_max_bytes.saturating_add(1),
+                0,
+                0,
+                1,
+                &policy,
+            ),
+            Ok((
+                SemanticCandidateDispositionV1::SkippedAtomHardLimit,
+                policy.atom_hard_max_bytes.saturating_add(1)
+            ))
+        );
+        assert_eq!(
+            expected_semantic_disposition(1, 1, 0, 1, &policy),
+            Ok((SemanticCandidateDispositionV1::SkippedCountBudget, 1))
+        );
+        let selected_bytes = policy
+            .semantic_body_budget_bytes
+            .saturating_sub(policy.atom_hard_max_bytes);
+        assert_eq!(
+            expected_semantic_disposition(
+                policy.atom_hard_max_bytes,
+                0,
+                selected_bytes,
+                1,
+                &policy,
+            ),
+            Ok((
+                SemanticCandidateDispositionV1::Selected,
+                policy.semantic_body_budget_bytes
+            ))
+        );
+        assert_eq!(
+            expected_semantic_disposition(
+                policy.atom_hard_max_bytes,
+                0,
+                selected_bytes.saturating_add(1),
+                1,
+                &policy,
+            ),
+            Ok((
+                SemanticCandidateDispositionV1::SkippedByteBudget,
+                policy.semantic_body_budget_bytes.saturating_add(1)
+            ))
+        );
+        assert_eq!(
+            expected_semantic_disposition(1, 0, u64::MAX, 1, &policy),
+            Err(MemoryError::ReceiptRejected(
+                "semantic candidate byte count overflow"
+            ))
+        );
+    }
+
+    #[test]
+    fn selected_semantic_candidate_matches_every_authority_field() -> crate::Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let semantic = planned_semantic(2)?;
+        let decision = decision_for(&semantic, SemanticCandidateDispositionV1::Selected);
+        assert_eq!(
+            ensure_semantic_evidence(
+                std::slice::from_ref(&decision),
+                std::slice::from_ref(&semantic),
+                1,
+                &policy,
+            ),
+            Ok(())
+        );
+
+        let mut wrong_atom = decision.clone();
+        wrong_atom.atom_id = test_atom_id(b"wrong-candidate");
+        let mut wrong_size = decision.clone();
+        wrong_size.canonical_size_bytes = wrong_size.canonical_size_bytes.saturating_add(1);
+        let mut wrong_sources = decision.clone();
+        wrong_sources.source_ids = source_ids(99);
+        let mut wrong_score = decision;
+        wrong_score.score.total = Ppm::from_raw_unchecked(699_999);
+
+        for changed in [wrong_atom, wrong_size, wrong_sources, wrong_score] {
+            assert_eq!(
+                ensure_semantic_evidence(&[changed], std::slice::from_ref(&semantic), 1, &policy),
+                Err(MemoryError::ReceiptRejected(
+                    "selected semantic candidate does not match its evidence"
+                ))
+            );
+        }
+        Ok(())
+    }
 }

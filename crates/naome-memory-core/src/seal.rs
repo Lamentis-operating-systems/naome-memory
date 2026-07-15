@@ -406,15 +406,20 @@ fn plan_episode_ranges(
             actual: target_bytes.saturating_add(1),
             target: target_bytes,
         })?;
-        if end <= start || end > event_count {
-            return Err(MemoryError::CanonicalEncoding(
-                "episode partition route was invalid".to_owned(),
-            ));
-        }
+        validate_partition_boundary(start, end, event_count)?;
         ranges.push((start, end));
         start = end;
     }
     Ok(ranges)
+}
+
+fn validate_partition_boundary(start: usize, end: usize, event_count: usize) -> Result<()> {
+    if end <= start || end > event_count {
+        return Err(MemoryError::CanonicalEncoding(
+            "episode partition route was invalid".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn segment_base_bytes(
@@ -784,5 +789,492 @@ const fn relation_kind_key(kind: MemoryRelationKindV1) -> u8 {
         MemoryRelationKindV1::Contradicts => 2,
         MemoryRelationKindV1::Supersedes => 3,
         MemoryRelationKindV1::DerivedFrom => 4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scope() -> MemoryScopeV1 {
+        MemoryScopeV1 {
+            memory_space_id: "space-a".to_owned(),
+            repository_id: Some("repository-a".to_owned()),
+            task_id: Some("task-a".to_owned()),
+            agent_id: Some("agent-a".to_owned()),
+            session_id: "session-a".to_owned(),
+        }
+    }
+
+    fn event(sequence: u64, at_us: u64) -> EpisodeEventV1 {
+        EpisodeEventV1 {
+            sequence,
+            at_us,
+            scope: scope(),
+            observation: Some(ObservationV1 {
+                at_us,
+                source: "unit-test".to_owned(),
+                content: format!("event-{sequence}"),
+                artifact_digest: None,
+            }),
+            interpretation: None,
+            belief: None,
+            decision: None,
+            action: None,
+        }
+    }
+
+    fn fixture(event_count: u64) -> (EpisodeBufferV1, SealEpisodeRequestV1) {
+        let events = (0..event_count)
+            .map(|offset| event(7 + offset, 11 + offset))
+            .collect();
+        (
+            EpisodeBufferV1 {
+                scope: scope(),
+                started_at_us: 10,
+                events,
+                continues: None,
+            },
+            SealEpisodeRequestV1 {
+                as_of_us: 30,
+                ended_at_us: 20,
+                trigger: "checkpoint".to_owned(),
+                seal_reason: SealReasonV1::Checkpoint,
+                goal: None,
+                plan: Vec::new(),
+                internal_state_before: BTreeMap::new(),
+                internal_state_after: BTreeMap::new(),
+                rejected_alternatives: Vec::new(),
+                outcome: None,
+                feedback: Vec::new(),
+                formation_signals: FormationSignalsV1::default(),
+                topic_keys: BTreeSet::new(),
+                entity_ids: BTreeSet::new(),
+                outcome_class: None,
+                goal_key: None,
+                retention_permission: RetentionPermissionV1::TransientOnly,
+                artifacts: Vec::new(),
+                relations: Vec::new(),
+            },
+        )
+    }
+
+    fn synthetic_prepared(
+        cumulative_body_bytes: Vec<u64>,
+        cumulative_substantive: Vec<usize>,
+    ) -> PreparedEpisodeEvents {
+        assert_eq!(cumulative_body_bytes.len(), cumulative_substantive.len());
+        let event_count = cumulative_body_bytes.len().saturating_sub(1);
+        PreparedEpisodeEvents {
+            digests: vec![Digest32::ZERO; event_count],
+            cumulative_body_bytes,
+            cumulative_substantive,
+        }
+    }
+
+    fn assert_invalid_closure(
+        chain: &SealedEpisodeChainV1,
+        buffer: &EpisodeBufferV1,
+        prepared: &PreparedEpisodeEvents,
+        policy: &PolicyV1,
+    ) {
+        assert!(matches!(
+            validate_episode_chain_closure(chain, buffer, prepared, policy),
+            Err(MemoryError::InvalidAtomBody(_))
+        ));
+    }
+
+    fn update_episode_identity(episode: &mut SealedEpisodeV1) -> Result<()> {
+        episode.canonical_size_bytes = episode.body.encoded_size_bytes()?;
+        episode.atom_id = episode.body.atom_id()?;
+        Ok(())
+    }
+
+    #[test]
+    fn route_choice_orders_segment_count_before_longest_prefix() {
+        let fewer = RouteChoice {
+            remaining_segments: 1,
+            end: 1,
+        };
+        let more = RouteChoice {
+            remaining_segments: 2,
+            end: 99,
+        };
+        assert!(fewer.better_than(more));
+        assert!(!more.better_than(fewer));
+
+        let shorter = RouteChoice {
+            remaining_segments: 2,
+            end: 4,
+        };
+        let longer = RouteChoice {
+            remaining_segments: 2,
+            end: 5,
+        };
+        assert!(longer.better_than(shorter));
+        assert!(!shorter.better_than(longer));
+        assert!(!longer.better_than(longer));
+    }
+
+    #[test]
+    fn route_tree_updates_only_real_nodes_and_respects_half_open_queries() -> Result<()> {
+        let mut routes = RouteChoices::new(4);
+        routes.insert(0, 4);
+        routes.insert(1, 2);
+        routes.insert(2, 2);
+        routes.insert(3, 1);
+
+        assert!(routes.nodes[0].is_none());
+        for (start, end, expected_segments, expected_end) in [
+            (0, 4, 1, 3),
+            (0, 3, 2, 2),
+            (1, 3, 2, 2),
+            (1, 2, 2, 1),
+            (2, 4, 1, 3),
+            (3, 4, 1, 3),
+        ] {
+            let choice = routes.best_in(start, end).ok_or_else(|| {
+                MemoryError::CanonicalEncoding("unit-test route was missing".to_owned())
+            })?;
+            assert_eq!(choice.remaining_segments, expected_segments);
+            assert_eq!(choice.end, expected_end);
+        }
+        assert!(routes.best_in(0, 0).is_none());
+
+        let mut outside_must_not_leak = RouteChoices::new(4);
+        outside_must_not_leak.insert(0, 0);
+        outside_must_not_leak.insert(1, 5);
+        let isolated = outside_must_not_leak.best_in(1, 2).ok_or_else(|| {
+            MemoryError::CanonicalEncoding("isolated unit-test route was missing".to_owned())
+        })?;
+        assert_eq!(isolated.remaining_segments, 5);
+        assert_eq!(isolated.end, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn shared_outcome_or_feedback_makes_each_segment_substantive() -> Result<()> {
+        let prepared = synthetic_prepared(vec![0, 1, 2], vec![0, 0, 0]);
+        let (_, mut request) = fixture(2);
+        request.outcome = Some(OutcomeV1 {
+            class: "ok".to_owned(),
+            summary: "shared".to_owned(),
+            succeeded: true,
+        });
+        assert_eq!(
+            plan_episode_ranges(&prepared, &request, 0, 0, 1)?,
+            vec![(0, 1), (1, 2)]
+        );
+
+        request.outcome = None;
+        request.feedback.push(FeedbackSignalV1 {
+            source: "unit-test".to_owned(),
+            positive: true,
+            note: None,
+        });
+        assert_eq!(
+            plan_episode_ranges(&prepared, &request, 0, 0, 1)?,
+            vec![(0, 1), (1, 2)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn substantive_boundary_exactly_at_capacity_is_a_valid_route() -> Result<()> {
+        let prepared = synthetic_prepared(vec![0, 1], vec![0, 1]);
+        let (_, request) = fixture(1);
+        assert_eq!(
+            plan_episode_ranges(&prepared, &request, 0, 0, 1)?,
+            vec![(0, 1)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn partition_boundary_rejects_each_invalid_side_independently() {
+        assert!(validate_partition_boundary(0, 1, 1).is_ok());
+        assert!(validate_partition_boundary(1, 1, 2).is_err());
+        assert!(validate_partition_boundary(2, 1, 3).is_err());
+        assert!(validate_partition_boundary(1, 4, 3).is_err());
+    }
+
+    #[test]
+    fn episode_range_uses_source_edges_only_at_chain_edges() -> Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let (buffer, request) = fixture(3);
+        let prepared = PreparedEpisodeEvents::new(&buffer.events)?;
+
+        let prefix = seal_episode_range(&buffer, &request, &policy, &prepared, 0, 2, None)?;
+        assert_eq!(prefix.body.interval.started_at_us, buffer.started_at_us);
+        assert_eq!(prefix.body.interval.ended_at_us, buffer.events[1].at_us);
+
+        let suffix = seal_episode_range(&buffer, &request, &policy, &prepared, 1, 3, None)?;
+        assert_eq!(suffix.body.interval.started_at_us, buffer.events[1].at_us);
+        assert_eq!(suffix.body.interval.ended_at_us, request.ended_at_us);
+        Ok(())
+    }
+
+    #[test]
+    fn atom_exactly_at_target_is_not_oversized() -> Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let (buffer, mut request) = fixture(1);
+        let prepared = PreparedEpisodeEvents::new(&buffer.events)?;
+        request.goal = Some(String::new());
+        let empty_goal = seal_episode_range(&buffer, &request, &policy, &prepared, 0, 1, None)?;
+        let padding = policy
+            .atom_target_bytes
+            .checked_sub(empty_goal.canonical_size_bytes)
+            .ok_or_else(|| {
+                MemoryError::CanonicalEncoding(
+                    "unit-test fixture exceeded the atom target".to_owned(),
+                )
+            })?;
+        request.goal = Some("x".repeat(usize::try_from(padding).map_err(|_| {
+            MemoryError::CanonicalEncoding("unit-test padding exceeded usize".to_owned())
+        })?));
+        let exact = seal_episode_range(&buffer, &request, &policy, &prepared, 0, 1, None)?;
+        assert_eq!(exact.canonical_size_bytes, policy.atom_target_bytes);
+        assert!(!exact.target_size_exceeded);
+        Ok(())
+    }
+
+    #[test]
+    fn chain_closure_checks_each_episode_authority_field_independently() -> Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let (buffer, request) = fixture(1);
+        let prepared = PreparedEpisodeEvents::new(&buffer.events)?;
+        let chain = seal_episode_chain(&buffer, &request, &policy)?;
+        assert!(validate_episode_chain_closure(&chain, &buffer, &prepared, &policy).is_ok());
+
+        let mut changed = chain.clone();
+        let MemoryPayloadV1::Episode(payload) = &mut changed.episodes[0].body.payload else {
+            return Err(MemoryError::InvalidAtomBody(
+                "unit-test fixture must be episodic",
+            ));
+        };
+        payload.event_sequence_start = payload.event_sequence_start.saturating_add(1);
+        update_episode_identity(&mut changed.episodes[0])?;
+        assert_invalid_closure(&changed, &buffer, &prepared, &policy);
+
+        let mut changed = chain.clone();
+        let MemoryPayloadV1::Episode(payload) = &mut changed.episodes[0].body.payload else {
+            return Err(MemoryError::InvalidAtomBody(
+                "unit-test fixture must be episodic",
+            ));
+        };
+        payload.event_sequence_end = payload.event_sequence_end.saturating_add(1);
+        update_episode_identity(&mut changed.episodes[0])?;
+        assert_invalid_closure(&changed, &buffer, &prepared, &policy);
+
+        let mut changed = chain.clone();
+        let MemoryPayloadV1::Episode(payload) = &mut changed.episodes[0].body.payload else {
+            return Err(MemoryError::InvalidAtomBody(
+                "unit-test fixture must be episodic",
+            ));
+        };
+        payload.continues = Some(AtomId(Digest32::hash_prefixed(b"test\0", b"previous")));
+        update_episode_identity(&mut changed.episodes[0])?;
+        assert_invalid_closure(&changed, &buffer, &prepared, &policy);
+
+        let mut changed = chain.clone();
+        changed.episodes[0].body.provenance.source_event_digests[0] = Digest32::ZERO;
+        update_episode_identity(&mut changed.episodes[0])?;
+        assert_invalid_closure(&changed, &buffer, &prepared, &policy);
+
+        let mut changed = chain.clone();
+        changed.episodes[0].canonical_size_bytes =
+            changed.episodes[0].canonical_size_bytes.saturating_add(1);
+        assert_invalid_closure(&changed, &buffer, &prepared, &policy);
+
+        let mut exact_target = policy.clone();
+        exact_target.atom_target_bytes = chain.episodes[0].canonical_size_bytes;
+        assert!(validate_episode_chain_closure(&chain, &buffer, &prepared, &exact_target).is_ok());
+
+        let mut below_target = policy.clone();
+        below_target.atom_target_bytes = chain.episodes[0].canonical_size_bytes.saturating_sub(1);
+        assert_invalid_closure(&chain, &buffer, &prepared, &below_target);
+
+        let mut exact_hard_max = policy.clone();
+        exact_hard_max.atom_hard_max_bytes = chain.episodes[0].canonical_size_bytes;
+        assert!(
+            validate_episode_chain_closure(&chain, &buffer, &prepared, &exact_hard_max).is_ok()
+        );
+
+        let mut below_hard_max = policy.clone();
+        below_hard_max.atom_hard_max_bytes =
+            chain.episodes[0].canonical_size_bytes.saturating_sub(1);
+        assert_invalid_closure(&chain, &buffer, &prepared, &below_hard_max);
+
+        let mut changed = chain.clone();
+        changed.episodes[0].atom_id = AtomId::default();
+        assert_invalid_closure(&changed, &buffer, &prepared, &policy);
+        Ok(())
+    }
+
+    #[test]
+    fn chain_closure_checks_source_count_and_nonempty_chain_independently() -> Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let (buffer, request) = fixture(1);
+        let prepared = PreparedEpisodeEvents::new(&buffer.events)?;
+        let chain = seal_episode_chain(&buffer, &request, &policy)?;
+
+        let mut extended_buffer = buffer.clone();
+        extended_buffer.events.push(event(8, 12));
+        let extended_prepared = PreparedEpisodeEvents::new(&extended_buffer.events)?;
+        let mut changed = chain.clone();
+        changed.source_event_count = extended_buffer.events.len();
+        assert_invalid_closure(&changed, &extended_buffer, &extended_prepared, &policy);
+
+        let mut changed = chain.clone();
+        changed.source_event_count = 0;
+        assert_invalid_closure(&changed, &buffer, &prepared, &policy);
+
+        let mut empty_buffer = buffer;
+        empty_buffer.events.clear();
+        let empty_prepared = PreparedEpisodeEvents::new(&empty_buffer.events)?;
+        let empty_chain = SealedEpisodeChainV1 {
+            contract_version: "sealed-episode-chain-v1".to_owned(),
+            source_event_count: 0,
+            episodes: Vec::new(),
+        };
+        assert_invalid_closure(&empty_chain, &empty_buffer, &empty_prepared, &policy);
+        Ok(())
+    }
+
+    #[test]
+    fn episode_time_boundaries_are_inclusive_but_ordered() {
+        let policy = PolicyV1::poc_v1();
+        let (mut buffer, mut request) = fixture(1);
+        buffer.started_at_us = 20;
+        buffer.events[0].at_us = 20;
+        request.ended_at_us = 20;
+        request.as_of_us = 20;
+        assert!(validate_episode_input(&buffer, &request, &policy).is_ok());
+
+        let (buffer, request) = fixture(1);
+        assert!(validate_episode_input(&buffer, &request, &policy).is_ok());
+
+        let mut changed = request.clone();
+        changed.ended_at_us = buffer.started_at_us.saturating_sub(1);
+        assert!(validate_episode_input(&buffer, &changed, &policy).is_err());
+
+        let mut changed = request;
+        changed.as_of_us = changed.ended_at_us.saturating_sub(1);
+        assert!(validate_episode_input(&buffer, &changed, &policy).is_err());
+    }
+
+    #[test]
+    fn event_time_boundaries_are_inclusive_and_monotonic() {
+        let policy = PolicyV1::poc_v1();
+        let (mut buffer, request) = fixture(1);
+        buffer.events[0].at_us = request.ended_at_us;
+        assert!(validate_episode_input(&buffer, &request, &policy).is_ok());
+
+        let (mut buffer, request) = fixture(2);
+        buffer.events[1].at_us = buffer.events[0].at_us;
+        assert!(validate_episode_input(&buffer, &request, &policy).is_ok());
+
+        buffer.events[1].at_us = buffer.events[0].at_us.saturating_sub(1);
+        assert!(matches!(
+            validate_episode_input(&buffer, &request, &policy),
+            Err(MemoryError::NonMonotonicEventTime { .. })
+        ));
+    }
+
+    #[test]
+    fn observation_decision_or_action_each_make_an_episode_substantive() {
+        let policy = PolicyV1::poc_v1();
+        let (buffer, request) = fixture(1);
+        assert!(validate_episode_input(&buffer, &request, &policy).is_ok());
+
+        let mut decision_only = buffer.clone();
+        decision_only.events[0].observation = None;
+        decision_only.events[0].decision = Some(DecisionRecordV1 {
+            decision: "keep".to_owned(),
+            rationale: "authority".to_owned(),
+        });
+        assert!(validate_episode_input(&decision_only, &request, &policy).is_ok());
+
+        let mut action_only = buffer;
+        action_only.events[0].observation = None;
+        action_only.events[0].action = Some(ActionRecordV1 {
+            action: "record".to_owned(),
+            result: None,
+        });
+        assert!(validate_episode_input(&action_only, &request, &policy).is_ok());
+    }
+
+    #[test]
+    fn artifact_limits_are_inclusive_and_integrity_checks_are_independent() {
+        let policy = PolicyV1::poc_v1();
+        let exact_external = ArtifactRefV1 {
+            digest: Digest32::ZERO,
+            size_bytes: policy.artifact_max_bytes,
+            media_type: "application/octet-stream".to_owned(),
+            retention_allowed: true,
+            inline_payload: None,
+        };
+        assert!(validate_artifacts(&[exact_external], &policy).is_ok());
+
+        let inline = vec![7_u8; usize::try_from(policy.inline_payload_max_bytes).unwrap_or(0)];
+        let exact_inline = ArtifactRefV1 {
+            digest: Digest32::hash_prefixed(&[], &inline),
+            size_bytes: policy.inline_payload_max_bytes,
+            media_type: "application/octet-stream".to_owned(),
+            retention_allowed: true,
+            inline_payload: Some(inline.clone()),
+        };
+        assert!(validate_artifacts(&[exact_inline], &policy).is_ok());
+
+        let wrong_size = ArtifactRefV1 {
+            digest: Digest32::hash_prefixed(&[], &inline),
+            size_bytes: policy.inline_payload_max_bytes.saturating_sub(1),
+            media_type: "application/octet-stream".to_owned(),
+            retention_allowed: true,
+            inline_payload: Some(inline.clone()),
+        };
+        assert!(matches!(
+            validate_artifacts(&[wrong_size], &policy),
+            Err(MemoryError::ArtifactDigestMismatch { .. })
+        ));
+
+        let wrong_digest = ArtifactRefV1 {
+            digest: Digest32::ZERO,
+            size_bytes: policy.inline_payload_max_bytes,
+            media_type: "application/octet-stream".to_owned(),
+            retention_allowed: true,
+            inline_payload: Some(inline),
+        };
+        assert!(matches!(
+            validate_artifacts(&[wrong_digest], &policy),
+            Err(MemoryError::ArtifactDigestMismatch { .. })
+        ));
+
+        let too_large = ArtifactRefV1 {
+            digest: Digest32::ZERO,
+            size_bytes: policy.artifact_max_bytes.saturating_add(1),
+            media_type: "application/octet-stream".to_owned(),
+            retention_allowed: true,
+            inline_payload: None,
+        };
+        assert!(matches!(
+            validate_artifacts(&[too_large], &policy),
+            Err(MemoryError::ArtifactTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn relation_kind_order_is_total_and_stable() {
+        assert_eq!(
+            [
+                MemoryRelationKindV1::Continues,
+                MemoryRelationKindV1::Supports,
+                MemoryRelationKindV1::Contradicts,
+                MemoryRelationKindV1::Supersedes,
+                MemoryRelationKindV1::DerivedFrom,
+            ]
+            .map(relation_kind_key),
+            [0, 1, 2, 3, 4]
+        );
     }
 }

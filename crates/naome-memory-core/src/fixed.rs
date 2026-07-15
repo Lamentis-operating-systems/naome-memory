@@ -84,9 +84,6 @@ impl Ppm {
 
     /// `ceil(population * self)` without floating point.
     pub fn ceil_count(self, population: usize) -> usize {
-        if population == 0 || self.0 == 0 {
-            return 0;
-        }
         let numerator = (population as u128) * u128::from(self.0);
         let value = numerator.div_ceil(u128::from(Self::SCALE));
         usize::try_from(value).unwrap_or(usize::MAX)
@@ -115,9 +112,18 @@ mod tests {
     fn bounds_and_ceiling_are_exact() {
         assert!(Ppm::new(1_000_001).is_err());
         let half_percent = Ppm::new(5_000).unwrap_or(Ppm::ZERO);
+        assert_eq!(Ppm::ONE.ceil_count(0), 0);
+        assert_eq!(Ppm::ZERO.ceil_count(42), 0);
         assert_eq!(half_percent.ceil_count(1), 1);
         assert_eq!(half_percent.ceil_count(200), 1);
         assert_eq!(half_percent.ceil_count(201), 2);
+    }
+
+    #[test]
+    fn complement_and_rounded_mean_cover_small_nonzero_values() {
+        assert_eq!(Ppm::ZERO.complement(), Ppm::ONE);
+        let one_ppm = Ppm::from_raw_unchecked(1);
+        assert_eq!(Ppm::mean([Ppm::ZERO, one_ppm]), one_ppm);
     }
 
     #[test]
