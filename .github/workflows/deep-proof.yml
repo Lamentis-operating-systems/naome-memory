@@ -105,6 +105,17 @@ jobs:
         run: cargo +1.95.0 install --locked cargo-fuzz --version 0.13.2
       - name: Fuzz decoder, canonical encoding, receipt verifier, and SQLite ingest
         run: cargo +1.95.0 run --locked -p xtask -- fuzz --seconds 120
+      - name: Install pinned Draft 2020-12 validator
+        if: ${{ always() }}
+        run: python3 -m pip install --disable-pip-version-check --no-input --requirement .github/schema-requirements.txt
+      - name: Verify runtime and schema closure of fuzz evidence
+        if: ${{ always() }}
+        run: |
+          cargo +1.95.0 run --locked -p xtask -- verify-tool-receipt \
+            --receipt target/proofs/fuzz-receipt.json \
+            --proof-dir target/proofs
+          python3 scripts/validate_json_schemas.py \
+            --bind schemas/tool-receipt-v1.schema.json=target/proofs/fuzz-receipt.json
       - name: Upload fuzz evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -112,4 +123,5 @@ jobs:
           name: fuzz-proof-${{ github.sha }}
           path: target/proofs/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 30

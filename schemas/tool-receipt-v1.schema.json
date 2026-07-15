@@ -36,7 +36,7 @@
       "additionalProperties": false,
       "required": [
         "target", "command", "requested_duration_seconds", "observed_duration_millis",
-        "exit_code", "log_stem", "stdout_digest", "stderr_digest"
+        "exit_code", "log_stem", "stdout_digest", "stderr_digest", "artifacts"
       ],
       "properties": {
         "target": { "type": "string", "minLength": 1 },
@@ -60,7 +60,25 @@
         },
         "log_stem": { "type": "string", "pattern": "^[A-Za-z0-9-]+$" },
         "stdout_digest": { "$ref": "#/$defs/digest" },
-        "stderr_digest": { "$ref": "#/$defs/digest" }
+        "stderr_digest": { "$ref": "#/$defs/digest" },
+        "artifacts": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/artifact" }
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "byte_len", "sha256"],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "pattern": "^fuzz-artifacts/[A-Za-z0-9_-]+/[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "byte_len": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+        "sha256": { "$ref": "#/$defs/digest" }
       }
     }
   }

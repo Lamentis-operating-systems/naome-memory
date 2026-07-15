@@ -111,6 +111,14 @@ binds the exact source commit, pinned tool and Rust versions, argument vector,
 requested and observed duration, process exit code, and SHA-256 digests of
 retained stdout and stderr logs. Release preflight re-hashes those logs and
 rejects a status-only, cross-commit, wrong-command, or incomplete receipt.
+Fuzz crash reproducers are additionally copied into bounded proof storage and
+bound by relative path, exact byte length, and SHA-256 digest. Verification
+requires exact directory closure, including the absence of unbound files.
+Structural verification accepts a status-consistent failed campaign so its
+reproducer remains independently auditable; release acceptance separately
+requires `passed`, zero exit codes, positive bounded durations, and no crash
+reproducers. A runner-level kill before publication produces no receipt and is
+therefore inconclusive rather than failed or passed.
 
 The separate `scale-receipt-v1` envelope binds its source commit and a
 full-evidence digest over the logical scale closure plus explicitly labeled

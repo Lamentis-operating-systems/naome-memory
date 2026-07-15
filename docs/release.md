@@ -47,6 +47,13 @@ toolchain and tool versions, exact commands, all required targets, exit codes,
 durations, and retained output-log digests. A JSON object that merely says
 `passed` is not accepted by release preflight.
 
+The GitHub Release includes `tool-evidence-v1.tar.gz`, which preserves the
+receipt verifier's `tool-logs/` and `fuzz-artifacts/` directory structure in
+addition to the convenient standalone receipt files. Its checksum and build
+attestation are published with the other assets. A release-eligible fuzz
+receipt has an empty crash-artifact set; failed crash receipts remain
+structurally verifiable evidence but can never satisfy release preflight.
+
 If tag validation, closure, an invariant, a hypothesis, scale, build, checksum, SBOM, or attestation step fails, no release is created. Correct the source through a new pull request and create a new version tag; do not move or replace an existing release tag.
 
 The current frozen `holdout-v1` evidence rejects `semantic_utility`: its lower
