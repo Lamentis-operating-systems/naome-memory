@@ -144,7 +144,7 @@ impl FromStr for Digest32 {
         for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
             let high = from_hex(chunk[0]).ok_or(MemoryError::InvalidDigest)?;
             let low = from_hex(chunk[1]).ok_or(MemoryError::InvalidDigest)?;
-            bytes[index] = (high << 4) | low;
+            bytes[index] = high.wrapping_shl(4).wrapping_add(low);
         }
         Ok(Self(bytes))
     }

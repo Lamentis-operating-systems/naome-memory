@@ -1134,6 +1134,38 @@ fn projected_digest(plan: &RetirementPlanV1) -> Result<Digest32> {
     plan.projected_post_state.digest()
 }
 
+fn mutate_first_source_state(
+    plan: &RetirementPlanV1,
+    mutate: impl FnOnce(&mut RetirementPostStateAtomV1),
+) -> Result<RetirementPlanV1> {
+    let mut changed = plan.clone();
+    let state = changed
+        .projected_post_state
+        .source_atoms
+        .first_mut()
+        .ok_or(MemoryError::ReceiptRejected(
+            "test plan has no projected source state",
+        ))?;
+    mutate(state);
+    Ok(changed)
+}
+
+fn mutate_first_semantic_state(
+    plan: &RetirementPlanV1,
+    mutate: impl FnOnce(&mut RetirementPostStateAtomV1),
+) -> Result<RetirementPlanV1> {
+    let mut changed = plan.clone();
+    let state = changed
+        .projected_post_state
+        .semantic_atoms
+        .first_mut()
+        .ok_or(MemoryError::ReceiptRejected(
+            "test plan has no projected semantic state",
+        ))?;
+    mutate(state);
+    Ok(changed)
+}
+
 fn outcome_for(plan: &RetirementPlanV1) -> ApplyRetirementOutcomeV1 {
     let closure = ReceiptClosureV1::from_plan(plan);
     ApplyRetirementOutcomeV1 {
@@ -1180,17 +1212,52 @@ fn apply_retirement_rejects_every_incomplete_repository_closure() -> Result<()> 
         Err(MemoryError::InvalidApplyClosure("decision count mismatch"))
     );
     let mut changed = outcome_for(&plan);
-    changed.semantic_atom_ids.clear();
-    assert!(matches!(
+    let foreign_atom = AtomId(Digest32::hash_prefixed(b"test:foreign-atom\0", b"semantic"));
+    changed.semantic_atom_ids.push(foreign_atom);
+    assert_eq!(
         apply_retirement(&mut OutcomeRepository(changed), &plan),
-        Err(MemoryError::InvalidApplyClosure(_))
-    ));
+        Err(MemoryError::InvalidApplyClosure(
+            "semantic, episodic, or artifact closure mismatch"
+        ))
+    );
+    let mut changed = outcome_for(&plan);
+    changed
+        .episodic_atom_ids
+        .push(AtomId(Digest32::hash_prefixed(
+            b"test:foreign-atom\0",
+            b"episodic",
+        )));
+    assert_eq!(
+        apply_retirement(&mut OutcomeRepository(changed), &plan),
+        Err(MemoryError::InvalidApplyClosure(
+            "semantic, episodic, or artifact closure mismatch"
+        ))
+    );
+    let mut changed = outcome_for(&plan);
+    changed.exact_artifact_digests.insert(
+        AtomId(Digest32::hash_prefixed(
+            b"test:foreign-atom\0",
+            b"artifact-owner",
+        )),
+        vec![Digest32::hash_prefixed(
+            b"test:foreign-artifact\0",
+            b"artifact",
+        )],
+    );
+    assert_eq!(
+        apply_retirement(&mut OutcomeRepository(changed), &plan),
+        Err(MemoryError::InvalidApplyClosure(
+            "semantic, episodic, or artifact closure mismatch"
+        ))
+    );
     Ok(())
 }
 
 #[test]
 fn plan_structure_rejects_version_policy_state_order_authority_and_budgets() -> Result<()> {
     let plan = plan_retirement(&snapshot()?, &PolicyV1::poc_v1(), Seed32::new([4; 32]))?;
+    assert_eq!(plan.semantic_decisions.len(), 1);
+    assert_eq!(plan.semantic_atoms.len(), 1);
     let mut changed = plan.clone();
     changed.contract_version = "retirement-plan-v2".to_owned();
     assert!(matches!(
@@ -1199,6 +1266,18 @@ fn plan_structure_rejects_version_policy_state_order_authority_and_budgets() -> 
     ));
     let mut changed = plan.clone();
     changed.policy_id = "other".to_owned();
+    assert_eq!(
+        verify_plan_structure(&changed),
+        Err(MemoryError::PolicyMismatch)
+    );
+    let mut changed = plan.clone();
+    changed.policy_digest = Digest32::ZERO;
+    assert_eq!(
+        verify_plan_structure(&changed),
+        Err(MemoryError::PolicyMismatch)
+    );
+    let mut changed = plan.clone();
+    changed.rng_identifier = "other-rng".to_owned();
     assert_eq!(
         verify_plan_structure(&changed),
         Err(MemoryError::PolicyMismatch)
@@ -1246,14 +1325,321 @@ fn plan_structure_rejects_version_policy_state_order_authority_and_budgets() -> 
             "semantic candidate source closure is incomplete or unordered"
         ))
     ));
+
+    let winner = plan
+        .episodic_winners
+        .first()
+        .copied()
+        .ok_or(MemoryError::ReceiptRejected(
+            "test plan has no episodic winner",
+        ))?;
+    let non_winner = plan
+        .decisions
+        .iter()
+        .find(|decision| !decision.exact_retained)
+        .map(|decision| decision.atom_id)
+        .ok_or(MemoryError::ReceiptRejected(
+            "test plan has no non-winning decision",
+        ))?;
+
     let mut changed = plan.clone();
-    changed.episodic_winner_budget = 0;
-    assert!(matches!(
+    changed.episodic_winners.push(winner);
+    assert_eq!(
+        verify_plan_structure(&changed),
+        Err(MemoryError::ReceiptRejected(
+            "episodic winners are not strictly atom-id ordered"
+        ))
+    );
+
+    let mut changed = plan.clone();
+    changed.episodic_winners = vec![non_winner];
+    assert_eq!(
         verify_plan_structure(&changed),
         Err(MemoryError::ReceiptRejected(
             "lottery or semantic budget mismatch"
         ))
+    );
+
+    let mut changed = plan.clone();
+    changed.episodic_population_count = 0;
+    assert_eq!(
+        verify_plan_structure(&changed),
+        Err(MemoryError::ReceiptRejected(
+            "lottery or semantic budget mismatch"
+        ))
+    );
+
+    let mut changed = plan.clone();
+    changed.episodic_winners.clear();
+    let decision = changed
+        .decisions
+        .iter_mut()
+        .find(|decision| decision.atom_id == winner)
+        .ok_or(MemoryError::ReceiptRejected(
+            "test plan has no winning decision",
+        ))?;
+    decision.exact_retained = false;
+    decision.forget_episode_body = true;
+    decision.exact_artifact_digests.clear();
+    let source_state = changed
+        .projected_post_state
+        .source_atoms
+        .iter_mut()
+        .find(|state| state.atom_id == winner)
+        .ok_or(MemoryError::ReceiptRejected(
+            "test plan has no winning source state",
+        ))?;
+    source_state.stored_body_digest = None;
+    source_state.retention_tier = RetentionTierV1::HeaderOnly;
+    source_state.content_status = ContentStatusV1::Forgotten;
+    source_state.search_projection_present = false;
+    source_state.pinned_artifact_digests.clear();
+    changed.projected_state_digest = projected_digest(&changed)?;
+    assert_eq!(
+        verify_plan_structure(&changed),
+        Err(MemoryError::ReceiptRejected(
+            "lottery or semantic budget mismatch"
+        ))
+    );
+
+    let mut changed = plan.clone();
+    changed.semantic_count_budget = changed.semantic_count_budget.saturating_add(1);
+    assert_eq!(
+        verify_plan_structure(&changed),
+        Err(MemoryError::ReceiptRejected(
+            "lottery or semantic budget mismatch"
+        ))
+    );
+
+    let mut changed = plan.clone();
+    changed.semantic_body_bytes = changed.semantic_body_bytes.saturating_add(1);
+    assert_eq!(
+        verify_plan_structure(&changed),
+        Err(MemoryError::ReceiptRejected(
+            "lottery or semantic budget mismatch"
+        ))
+    );
+
+    let policy = PolicyV1::poc_v1();
+    let mut at_pin_budget = plan.clone();
+    at_pin_budget.episodic_winner_bytes = policy.episodic_pin_budget_bytes;
+    assert_eq!(verify_plan_structure(&at_pin_budget), Ok(()));
+
+    let mut over_pin_budget = plan;
+    over_pin_budget.episodic_winner_bytes = policy.episodic_pin_budget_bytes.saturating_add(1);
+    assert_eq!(
+        verify_plan_structure(&over_pin_budget),
+        Err(MemoryError::ReceiptRejected(
+            "lottery or semantic budget mismatch"
+        ))
+    );
+    Ok(())
+}
+
+#[test]
+fn projected_post_state_rejects_each_isolated_source_and_semantic_mutation() -> Result<()> {
+    let policy = PolicyV1::poc_v1();
+    let mut mixed_snapshot = snapshot()?;
+    let candidate = mixed_snapshot
+        .atoms
+        .first_mut()
+        .ok_or(MemoryError::EmptyRetirementCohort)?;
+    let mut semantic_only_body = candidate
+        .body
+        .clone()
+        .ok_or(MemoryError::ReceiptRejected("test candidate has no body"))?;
+    semantic_only_body.retention_permission = RetentionPermissionV1::SemanticAllowed;
+    let semantic_only_candidate =
+        RetirementCandidateV1::from_present_body(semantic_only_body, candidate.state.clone())?;
+    let semantic_only_atom_id = semantic_only_candidate.atom_id;
+    *candidate = semantic_only_candidate;
+    let plan = plan_retirement(&mixed_snapshot, &policy, Seed32::new([40; 32]))?;
+    assert_eq!(verify_plan_structure(&plan), Ok(()));
+    let foreign_atom = AtomId(Digest32::hash_prefixed(
+        b"test:projection-atom\0",
+        b"foreign",
     ));
+    let foreign_digest = Digest32::hash_prefixed(b"test:projection-digest\0", b"foreign");
+
+    for changed in [
+        {
+            let mut value = plan.clone();
+            value.projected_post_state.memory_space_id = "other-space".to_owned();
+            value
+        },
+        {
+            let mut value = plan.clone();
+            value.projected_post_state.source_atoms.pop();
+            value
+        },
+        {
+            let mut value = plan.clone();
+            value.projected_post_state.semantic_atoms.clear();
+            value
+        },
+    ] {
+        assert_eq!(
+            verify_plan_structure(&changed),
+            Err(MemoryError::ReceiptRejected(
+                "projected post-state closure mismatch"
+            ))
+        );
+    }
+
+    let mut at_header_limit = mutate_first_source_state(&plan, |state| {
+        state.header_body_bytes = policy.atom_hard_max_bytes;
+    })?;
+    at_header_limit.projected_state_digest = projected_digest(&at_header_limit)?;
+    assert_eq!(verify_plan_structure(&at_header_limit), Ok(()));
+
+    for changed in [
+        mutate_first_source_state(&plan, |state| state.atom_id = foreign_atom)?,
+        mutate_first_source_state(&plan, |state| state.atom_kind = MemoryKindV1::Semantic)?,
+        mutate_first_source_state(&plan, |state| state.session_id = None)?,
+        mutate_first_source_state(&plan, |state| state.header_body_digest = foreign_digest)?,
+        mutate_first_source_state(&plan, |state| state.header_body_bytes = 0)?,
+        mutate_first_source_state(&plan, |state| {
+            state.header_body_bytes = policy.atom_hard_max_bytes.saturating_add(1);
+        })?,
+        mutate_first_source_state(&plan, |state| {
+            state.stored_body_digest = Some(foreign_digest);
+        })?,
+        mutate_first_source_state(&plan, |state| {
+            state.retention_tier = RetentionTierV1::SemanticLongTerm;
+        })?,
+        mutate_first_source_state(&plan, |state| {
+            state.content_status = ContentStatusV1::Corrupt;
+        })?,
+        mutate_first_source_state(&plan, |state| state.expires_at_us = Some(1))?,
+        mutate_first_source_state(&plan, |state| state.superseded_by = Some(foreign_atom))?,
+        mutate_first_source_state(&plan, |state| state.retirement_run_bound = false)?,
+        mutate_first_source_state(&plan, |state| {
+            state.search_projection_present = !state.search_projection_present;
+        })?,
+        mutate_first_source_state(&plan, |state| {
+            state.pinned_artifact_digests.push(foreign_digest);
+        })?,
+    ] {
+        assert_eq!(
+            verify_plan_structure(&changed),
+            Err(MemoryError::ReceiptRejected(
+                "projected source post-state mismatch"
+            ))
+        );
+    }
+
+    let mut invalid_forget = plan.clone();
+    let decision = invalid_forget
+        .decisions
+        .first_mut()
+        .ok_or(MemoryError::ReceiptRejected("test plan has no decision"))?;
+    decision.forget_episode_body = decision.exact_retained;
+    assert_eq!(
+        verify_plan_structure(&invalid_forget),
+        Err(MemoryError::ReceiptRejected(
+            "projected source post-state mismatch"
+        ))
+    );
+
+    let winner = plan
+        .decisions
+        .iter()
+        .find(|decision| decision.exact_retained)
+        .map(|decision| decision.atom_id)
+        .ok_or(MemoryError::ReceiptRejected(
+            "test plan has no exact winner",
+        ))?;
+    let mut invalid_winner_permission = plan.clone();
+    let state = invalid_winner_permission
+        .projected_post_state
+        .source_atoms
+        .iter_mut()
+        .find(|state| state.atom_id == winner)
+        .ok_or(MemoryError::ReceiptRejected(
+            "test plan has no exact winner state",
+        ))?;
+    state.retention_permission = RetentionPermissionV1::SemanticAllowed;
+    assert_eq!(
+        verify_plan_structure(&invalid_winner_permission),
+        Err(MemoryError::ReceiptRejected(
+            "projected source post-state mismatch"
+        ))
+    );
+
+    let non_winner = plan
+        .decisions
+        .iter()
+        .find(|decision| decision.atom_id == semantic_only_atom_id)
+        .ok_or(MemoryError::ReceiptRejected(
+            "test plan has no non-winning decision",
+        ))?;
+    assert!(!non_winner.exact_retained);
+    let state = plan
+        .projected_post_state
+        .source_atoms
+        .iter()
+        .find(|state| state.atom_id == semantic_only_atom_id)
+        .ok_or(MemoryError::ReceiptRejected(
+            "test plan has no non-winning source state",
+        ))?;
+    assert_eq!(
+        state.retention_permission,
+        RetentionPermissionV1::SemanticAllowed
+    );
+
+    for changed in [
+        mutate_first_semantic_state(&plan, |state| state.atom_id = foreign_atom)?,
+        mutate_first_semantic_state(&plan, |state| state.atom_kind = MemoryKindV1::Episode)?,
+        mutate_first_semantic_state(&plan, |state| {
+            state.repository_id = Some("other-repository".to_owned());
+        })?,
+        mutate_first_semantic_state(&plan, |state| {
+            state.task_id = Some("other-task".to_owned());
+        })?,
+        mutate_first_semantic_state(&plan, |state| {
+            state.agent_id = Some("other-agent".to_owned());
+        })?,
+        mutate_first_semantic_state(&plan, |state| {
+            state.session_id = Some("other-session".to_owned());
+        })?,
+        mutate_first_semantic_state(&plan, |state| {
+            state.recorded_at_us = state.recorded_at_us.saturating_add(1);
+        })?,
+        mutate_first_semantic_state(&plan, |state| state.header_body_digest = foreign_digest)?,
+        mutate_first_semantic_state(&plan, |state| {
+            state.header_body_bytes = state.header_body_bytes.saturating_add(1);
+        })?,
+        mutate_first_semantic_state(&plan, |state| {
+            state.retention_permission = RetentionPermissionV1::TransientOnly;
+        })?,
+        mutate_first_semantic_state(&plan, |state| state.provenance_digest = foreign_digest)?,
+        mutate_first_semantic_state(&plan, |state| {
+            state.stored_body_digest = Some(foreign_digest);
+        })?,
+        mutate_first_semantic_state(&plan, |state| {
+            state.retention_tier = RetentionTierV1::HeaderOnly;
+        })?,
+        mutate_first_semantic_state(&plan, |state| {
+            state.content_status = ContentStatusV1::Forgotten;
+        })?,
+        mutate_first_semantic_state(&plan, |state| state.expires_at_us = Some(1))?,
+        mutate_first_semantic_state(&plan, |state| state.superseded_by = Some(foreign_atom))?,
+        mutate_first_semantic_state(&plan, |state| state.feedback_positive = 1)?,
+        mutate_first_semantic_state(&plan, |state| state.feedback_negative = 1)?,
+        mutate_first_semantic_state(&plan, |state| state.retrieval_count = 1)?,
+        mutate_first_semantic_state(&plan, |state| state.retirement_run_bound = true)?,
+        mutate_first_semantic_state(&plan, |state| state.search_projection_present = false)?,
+        mutate_first_semantic_state(&plan, |state| {
+            state.pinned_artifact_digests.push(foreign_digest);
+        })?,
+    ] {
+        assert_eq!(
+            verify_plan_structure(&changed),
+            Err(MemoryError::ReceiptRejected(
+                "projected semantic post-state mismatch"
+            ))
+        );
+    }
     Ok(())
 }
 
@@ -1325,6 +1711,72 @@ fn receipt_verifier_rejects_tampered_inputs_artifacts_and_statuses() -> Result<(
             value.policy_digest = Digest32::ZERO;
             value
         },
+        {
+            let mut value = receipt.clone();
+            value.plan_digest = Digest32::ZERO;
+            value
+        },
+        {
+            let mut value = receipt.clone();
+            value.decision_digest = Digest32::ZERO;
+            value
+        },
+        {
+            let mut value = receipt.clone();
+            value.input_set_digest = Digest32::ZERO;
+            value
+        },
+        {
+            let mut value = receipt.clone();
+            value.rng_identifier = "other-rng".to_owned();
+            value
+        },
+        {
+            let mut value = receipt.clone();
+            value.population_digest = Digest32::ZERO;
+            value
+        },
+        {
+            let mut value = receipt.clone();
+            value.episodic_population_count = value.episodic_population_count.saturating_add(1);
+            value
+        },
+        {
+            let mut value = receipt.clone();
+            value.episodic_winner_budget = value.episodic_winner_budget.saturating_add(1);
+            value
+        },
+        {
+            let mut value = receipt.clone();
+            value.episodic_winner_bytes = value.episodic_winner_bytes.saturating_add(1);
+            value
+        },
+        {
+            let mut value = receipt.clone();
+            value.semantic_count_budget = value.semantic_count_budget.saturating_add(1);
+            value
+        },
+        {
+            let mut value = receipt.clone();
+            value.semantic_body_bytes = value.semantic_body_bytes.saturating_add(1);
+            value
+        },
+        {
+            let mut value = receipt.clone();
+            value.state_digest = Digest32::ZERO;
+            value
+        },
+        {
+            let mut value = receipt.clone();
+            value
+                .closure
+                .exact_episode_ids
+                .push(AtomId(Digest32::hash_prefixed(
+                    b"test:foreign-closure\0",
+                    b"episode",
+                )));
+            value
+        },
     ] {
         changed.receipt_id = changed.recompute_receipt_id()?;
         assert!(matches!(
@@ -1334,6 +1786,14 @@ fn receipt_verifier_rejects_tampered_inputs_artifacts_and_statuses() -> Result<(
             ))
         ));
     }
+    let mut changed_inputs = inputs.clone();
+    changed_inputs.observed_state_digest = Digest32::ZERO;
+    assert!(matches!(
+        verify_receipt(&receipt, &changed_inputs),
+        Err(MemoryError::ReceiptRejected(
+            "input, policy, seed, decision, state, or closure mismatch"
+        ))
+    ));
     let mut missing_artifacts = inputs.clone();
     missing_artifacts.observed_exact_artifact_digests.clear();
     assert!(matches!(

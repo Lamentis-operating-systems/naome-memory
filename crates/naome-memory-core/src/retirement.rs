@@ -223,12 +223,7 @@ pub fn plan_retirement(
     if snapshot.memory_space_id.is_empty() {
         return Err(MemoryError::EmptyField("memory_space_id"));
     }
-    if snapshot.atoms.len() > policy.max_cohort_atoms {
-        return Err(MemoryError::CohortTooLarge {
-            actual: snapshot.atoms.len(),
-            maximum: policy.max_cohort_atoms,
-        });
-    }
+    validate_cohort_size(snapshot.atoms.len(), policy)?;
     if snapshot.atoms.is_empty() {
         return Err(MemoryError::EmptyRetirementCohort);
     }
@@ -258,10 +253,7 @@ pub fn plan_retirement(
         .enumerate()
         .filter_map(|(index, candidate)| {
             let body = candidate.body.as_ref()?;
-            (candidate.integrity == IntegrityStatusV1::Complete
-                && body.kind() == MemoryKindV1::Episode
-                && body.retention_permission != RetentionPermissionV1::TransientOnly)
-                .then_some(index)
+            (body.retention_permission != RetentionPermissionV1::TransientOnly).then_some(index)
         })
         .collect::<Vec<_>>();
     let clusters = complete_link_clusters(&candidates, semantic_eligible_indices, policy);
@@ -327,24 +319,14 @@ pub fn plan_retirement(
                 ));
             }
         };
-        let disposition = if semantic.canonical_size_bytes > policy.atom_hard_max_bytes {
-            SemanticCandidateDispositionV1::SkippedAtomHardLimit
-        } else if semantic_atoms.len() >= semantic_count_budget {
-            SemanticCandidateDispositionV1::SkippedCountBudget
-        } else {
-            let Some(new_total) = semantic_body_bytes.checked_add(semantic.canonical_size_bytes)
-            else {
-                return Err(MemoryError::CanonicalEncoding(
-                    "semantic byte total overflowed u64".to_owned(),
-                ));
-            };
-            if new_total > policy.semantic_body_budget_bytes {
-                SemanticCandidateDispositionV1::SkippedByteBudget
-            } else {
-                semantic_body_bytes = new_total;
-                SemanticCandidateDispositionV1::Selected
-            }
-        };
+        let (disposition, next_semantic_body_bytes) = semantic_candidate_disposition(
+            semantic.canonical_size_bytes,
+            semantic_atoms.len(),
+            semantic_count_budget,
+            semantic_body_bytes,
+            policy,
+        )?;
+        semantic_body_bytes = next_semantic_body_bytes;
         semantic_decisions.push(SemanticCandidateDecisionV1 {
             atom_id: semantic.atom_id,
             source_ids,
@@ -356,20 +338,12 @@ pub fn plan_retirement(
             semantic_atoms.push(semantic);
         }
     }
-    if semantic_body_bytes > policy.semantic_body_budget_bytes {
-        return Err(MemoryError::CanonicalEncoding(
-            "semantic byte total exceeds policy budget".to_owned(),
-        ));
-    }
-
     let exact_population = candidates
         .iter()
         .enumerate()
         .filter_map(|(index, candidate)| {
             let body = candidate.body.as_ref()?;
-            (candidate.integrity == IntegrityStatusV1::Complete
-                && body.kind() == MemoryKindV1::Episode
-                && body.retention_permission == RetentionPermissionV1::SemanticAndExactAllowed)
+            (body.retention_permission == RetentionPermissionV1::SemanticAndExactAllowed)
                 .then_some(index)
         })
         .collect::<Vec<_>>();
@@ -407,12 +381,7 @@ pub fn plan_retirement(
                 MemoryError::CanonicalEncoding("episodic byte total overflowed u64".to_owned())
             })
     })?;
-    if episodic_winner_bytes > policy.episodic_pin_budget_bytes {
-        return Err(MemoryError::EpisodicBudgetExceeded {
-            actual: episodic_winner_bytes,
-            maximum: policy.episodic_pin_budget_bytes,
-        });
-    }
+    validate_episodic_budget(episodic_winner_bytes, policy)?;
     episodic_winners.sort_unstable();
 
     let winner_set = episodic_winners.iter().copied().collect::<BTreeSet<_>>();
@@ -490,6 +459,57 @@ pub fn plan_retirement(
         projected_post_state,
         projected_state_digest,
     })
+}
+
+fn semantic_candidate_disposition(
+    candidate_bytes: u64,
+    selected_count: usize,
+    count_budget: usize,
+    selected_bytes: u64,
+    policy: &PolicyV1,
+) -> crate::Result<(SemanticCandidateDispositionV1, u64)> {
+    if candidate_bytes > policy.atom_hard_max_bytes {
+        return Ok((
+            SemanticCandidateDispositionV1::SkippedAtomHardLimit,
+            selected_bytes,
+        ));
+    }
+    if selected_count >= count_budget {
+        return Ok((
+            SemanticCandidateDispositionV1::SkippedCountBudget,
+            selected_bytes,
+        ));
+    }
+    let new_total = selected_bytes.checked_add(candidate_bytes).ok_or_else(|| {
+        MemoryError::CanonicalEncoding("semantic byte total overflowed u64".to_owned())
+    })?;
+    if new_total > policy.semantic_body_budget_bytes {
+        return Ok((
+            SemanticCandidateDispositionV1::SkippedByteBudget,
+            selected_bytes,
+        ));
+    }
+    Ok((SemanticCandidateDispositionV1::Selected, new_total))
+}
+
+fn validate_cohort_size(atom_count: usize, policy: &PolicyV1) -> crate::Result<()> {
+    if atom_count > policy.max_cohort_atoms {
+        return Err(MemoryError::CohortTooLarge {
+            actual: atom_count,
+            maximum: policy.max_cohort_atoms,
+        });
+    }
+    Ok(())
+}
+
+fn validate_episodic_budget(episodic_winner_bytes: u64, policy: &PolicyV1) -> crate::Result<()> {
+    if episodic_winner_bytes > policy.episodic_pin_budget_bytes {
+        return Err(MemoryError::EpisodicBudgetExceeded {
+            actual: episodic_winner_bytes,
+            maximum: policy.episodic_pin_budget_bytes,
+        });
+    }
+    Ok(())
 }
 
 fn projected_post_state(
@@ -632,12 +652,6 @@ fn validate_candidates(
                 reason: "candidate expiry does not belong to the requested UTC cohort day",
             });
         }
-        if expires_at_us > snapshot.as_of_us {
-            return Err(MemoryError::InvalidRetirementCandidate {
-                atom_id: candidate.atom_id,
-                reason: "candidate has not expired as of the retirement snapshot",
-            });
-        }
         if candidate.integrity != IntegrityStatusV1::Complete {
             return Err(MemoryError::InvalidRetirementCandidate {
                 atom_id: candidate.atom_id,
@@ -654,6 +668,9 @@ fn validate_candidates(
                 atom_id: candidate.atom_id,
             });
         };
+        // Complete atom validation is the single authority for scope shape,
+        // interval/sequence closure, artifacts, body size, and exact-package
+        // limits. Retirement adds only cohort, lifecycle, and digest closure.
         validate_memory_atom_body(body, policy)?;
         let expected_expires_at_us = body
             .interval
@@ -669,41 +686,17 @@ fn validate_candidates(
                 reason: "STM expiry does not equal recorded time plus policy horizon",
             });
         }
-        if body.contract_version != "atom-v1" {
-            return Err(MemoryError::UnknownVersion(body.contract_version.clone()));
-        }
-        let MemoryPayloadV1::Episode(episode) = &body.payload else {
+        let MemoryPayloadV1::Episode(_) = &body.payload else {
             return Err(MemoryError::InvalidRetirementCandidate {
                 atom_id: candidate.atom_id,
                 reason: "STM retirement cohort contains a non-episode atom",
             });
         };
-        validate_candidate_scope(body, &snapshot.memory_space_id, candidate.atom_id)?;
-        if body.interval.started_at_us > body.interval.ended_at_us
-            || body.interval.ended_at_us > body.interval.recorded_at_us
-            || body.interval.recorded_at_us > expires_at_us
-            || episode.event_sequence_start > episode.event_sequence_end
-            || body.observations.iter().any(|observation| {
-                observation.at_us < body.interval.started_at_us
-                    || observation.at_us > body.interval.ended_at_us
-            })
-        {
-            return Err(MemoryError::InvalidRetirementCandidate {
-                atom_id: candidate.atom_id,
-                reason: "candidate interval or recorded time is invalid",
-            });
-        }
-        validate_candidate_artifacts(body, policy)?;
+        validate_candidate_scope(body, &snapshot.memory_space_id)?;
         let canonical_body = body.canonical_bytes()?;
         let canonical_size = u64::try_from(canonical_body.len()).map_err(|_| {
             MemoryError::CanonicalEncoding("atom body exceeds u64 length".to_owned())
         })?;
-        if canonical_size > policy.atom_hard_max_bytes {
-            return Err(MemoryError::AtomTooLarge {
-                actual: canonical_size,
-                maximum: policy.atom_hard_max_bytes,
-            });
-        }
         let artifact_bytes = body
             .artifacts
             .iter()
@@ -724,74 +717,13 @@ fn validate_candidates(
                 atom_id: candidate.atom_id,
             });
         }
-        if body.retention_permission == RetentionPermissionV1::SemanticAndExactAllowed
-            && exact_package_bytes > policy.exact_package_max_bytes
-        {
-            return Err(MemoryError::ExactPackageTooLarge {
-                actual: exact_package_bytes,
-                maximum: policy.exact_package_max_bytes,
-            });
-        }
     }
     Ok(())
 }
 
-fn validate_candidate_scope(
-    body: &MemoryAtomBodyV1,
-    memory_space_id: &str,
-    atom_id: AtomId,
-) -> crate::Result<()> {
+fn validate_candidate_scope(body: &MemoryAtomBodyV1, memory_space_id: &str) -> crate::Result<()> {
     if body.scope.memory_space_id != memory_space_id {
         return Err(MemoryError::MemorySpaceMismatch);
-    }
-    if body.scope.memory_space_id.is_empty() || body.scope.session_id.is_empty() {
-        return Err(MemoryError::InvalidRetirementCandidate {
-            atom_id,
-            reason: "candidate scope has an empty required identifier",
-        });
-    }
-    if [
-        body.scope.repository_id.as_deref(),
-        body.scope.task_id.as_deref(),
-        body.scope.agent_id.as_deref(),
-    ]
-    .into_iter()
-    .any(|value| value == Some(""))
-    {
-        return Err(MemoryError::InvalidRetirementCandidate {
-            atom_id,
-            reason: "candidate scope has an empty optional identifier",
-        });
-    }
-    Ok(())
-}
-
-fn validate_candidate_artifacts(body: &MemoryAtomBodyV1, policy: &PolicyV1) -> crate::Result<()> {
-    for artifact in &body.artifacts {
-        if artifact.size_bytes > policy.artifact_max_bytes {
-            return Err(MemoryError::ArtifactTooLarge {
-                actual: artifact.size_bytes,
-                maximum: policy.artifact_max_bytes,
-            });
-        }
-        if let Some(inline) = artifact.inline_payload.as_deref() {
-            let inline_size = u64::try_from(inline.len()).map_err(|_| {
-                MemoryError::CanonicalEncoding("inline payload exceeds u64 length".to_owned())
-            })?;
-            if inline_size > policy.inline_payload_max_bytes {
-                return Err(MemoryError::InlinePayloadTooLarge {
-                    actual: inline_size,
-                    maximum: policy.inline_payload_max_bytes,
-                });
-            }
-            if inline_size != artifact.size_bytes
-                || Digest32::hash_prefixed(&[], inline) != artifact.digest
-            {
-                return Err(MemoryError::ArtifactDigestMismatch {
-                    digest: artifact.digest,
-                });
-            }
-        }
     }
     Ok(())
 }
@@ -896,10 +828,12 @@ fn consolidation_score(
     let novelty = Ppm::mean(bodies.iter().map(|body| body.formation_signals.novelty));
     let uncertainty = Ppm::mean(bodies.iter().map(|body| body.formation_signals.uncertainty));
     let mut cohesion = Ppm::ONE;
-    for (position, left) in bodies.iter().enumerate() {
-        for right in bodies.iter().skip(position + 1) {
+    let mut remaining_bodies = bodies.as_slice();
+    while let Some((left, tail)) = remaining_bodies.split_first() {
+        for right in tail {
             cohesion = cohesion.min(semantic_similarity(left, right, policy));
         }
+        remaining_bodies = tail;
     }
     let positive = u64::from(policy.consolidation_support_weight.multiply(support).get())
         + u64::from(
@@ -1187,24 +1121,415 @@ pub(crate) fn partial_fisher_yates(population: usize, count: usize, seed: [u8; 3
     let mut rng = ChaCha20Rng::from_seed(seed);
     let selected = count.min(population);
     for index in 0..selected {
-        let remaining = population - index;
+        let Some(remaining) = population.checked_sub(index) else {
+            return Vec::new();
+        };
         let bound = u64::try_from(remaining).unwrap_or(u64::MAX);
         let offset = usize::try_from(uniform_below(&mut rng, bound)).unwrap_or(0);
-        positions.swap(index, index + offset);
+        let Some(swap_index) = index.checked_add(offset) else {
+            return Vec::new();
+        };
+        positions.swap(index, swap_index);
     }
     positions.truncate(selected);
     positions
 }
 
 fn uniform_below(rng: &mut ChaCha20Rng, bound: u64) -> u64 {
-    if bound <= 1 {
-        return 0;
+    match bound {
+        0 | 1 => return 0,
+        _ => {}
     }
     let threshold = bound.wrapping_neg() % bound;
     loop {
         let value = rng.next_u64();
-        if value >= threshold {
+        if value.checked_sub(threshold).is_some() {
             return value % bound;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AtomStateV1, EpisodePayloadV1, OutcomeV1};
+
+    const RETIRE_AT_US: u64 = 8 * MICROSECONDS_PER_DAY;
+
+    fn body(index: u64, session_id: &str, permission: RetentionPermissionV1) -> MemoryAtomBodyV1 {
+        MemoryAtomBodyV1 {
+            contract_version: "atom-v1".to_owned(),
+            scope: MemoryScopeV1 {
+                memory_space_id: "space-a".to_owned(),
+                repository_id: Some("repo-a".to_owned()),
+                task_id: Some("task-a".to_owned()),
+                agent_id: Some("agent-a".to_owned()),
+                session_id: session_id.to_owned(),
+            },
+            interval: TimeIntervalV1 {
+                started_at_us: index * 10,
+                ended_at_us: index * 10 + 1,
+                recorded_at_us: index * 10 + 2,
+            },
+            trigger: "synthetic-event".to_owned(),
+            seal_reason: SealReasonV1::GoalCompleted,
+            goal: Some("prove deterministic retirement".to_owned()),
+            plan: vec!["observe".to_owned(), "verify".to_owned()],
+            internal_state_before: BTreeMap::from([("phase".to_owned(), "open".to_owned())]),
+            internal_state_after: BTreeMap::from([("phase".to_owned(), "closed".to_owned())]),
+            observations: vec![ObservationV1 {
+                at_us: index * 10,
+                source: "synthetic".to_owned(),
+                content: format!("observation-{index}"),
+                artifact_digest: None,
+            }],
+            interpretations: Vec::new(),
+            beliefs: Vec::new(),
+            decisions: Vec::new(),
+            rejected_alternatives: Vec::new(),
+            actions: Vec::new(),
+            outcome: Some(OutcomeV1 {
+                class: "success".to_owned(),
+                summary: "synthetic outcome".to_owned(),
+                succeeded: true,
+            }),
+            feedback: Vec::new(),
+            formation_signals: FormationSignalsV1 {
+                utility: Ppm::from_raw_unchecked(900_000),
+                salience: Ppm::from_raw_unchecked(900_000),
+                novelty: Ppm::from_raw_unchecked(800_000),
+                uncertainty: Ppm::from_raw_unchecked(100_000),
+            },
+            topic_keys: BTreeSet::from(["determinism".to_owned(), "memory".to_owned()]),
+            entity_ids: BTreeSet::from(["naome".to_owned()]),
+            outcome_class: Some("success".to_owned()),
+            goal_key: Some("memory-proof".to_owned()),
+            provenance: ProvenanceV1 {
+                producer: "retirement-unit-test".to_owned(),
+                source_event_digests: vec![Digest32::hash_prefixed(
+                    b"retirement-unit-event\0",
+                    &index.to_be_bytes(),
+                )],
+                policy_digest: PolicyV1::poc_v1().digest().unwrap_or(Digest32::ZERO),
+            },
+            relations: Vec::new(),
+            artifacts: Vec::new(),
+            retention_permission: permission,
+            payload: MemoryPayloadV1::Episode(EpisodePayloadV1 {
+                event_sequence_start: index,
+                event_sequence_end: index,
+                continues: None,
+            }),
+        }
+    }
+
+    fn candidate(
+        index: u64,
+        session_id: &str,
+        permission: RetentionPermissionV1,
+    ) -> crate::Result<RetirementCandidateV1> {
+        let body = body(index, session_id, permission);
+        let state = AtomStateV1 {
+            retention_tier: RetentionTierV1::ShortTerm,
+            content_status: ContentStatusV1::Present,
+            expires_at_us: Some(
+                body.interval
+                    .recorded_at_us
+                    .saturating_add(PolicyV1::poc_v1().stm_horizon_us),
+            ),
+            superseded_by: None,
+            feedback_positive: 9,
+            feedback_negative: 0,
+            retrieval_count: 17,
+            retirement_run_id: None,
+        };
+        RetirementCandidateV1::from_present_body(body, state)
+    }
+
+    fn snapshot_with_permission(
+        permission: RetentionPermissionV1,
+    ) -> crate::Result<RetirementSnapshotV1> {
+        Ok(RetirementSnapshotV1 {
+            contract_version: "retirement-snapshot-v1".to_owned(),
+            memory_space_id: "space-a".to_owned(),
+            cohort_day: 7,
+            as_of_us: RETIRE_AT_US,
+            atoms: (0_u64..3)
+                .map(|index| candidate(index, &format!("session-{index}"), permission))
+                .collect::<crate::Result<Vec<_>>>()?,
+        })
+    }
+
+    #[test]
+    fn count_and_byte_budgets_accept_exact_boundaries_and_reject_only_excess() {
+        let policy = PolicyV1::poc_v1();
+        assert!(validate_cohort_size(policy.max_cohort_atoms, &policy).is_ok());
+        assert!(matches!(
+            validate_cohort_size(policy.max_cohort_atoms + 1, &policy),
+            Err(MemoryError::CohortTooLarge { .. })
+        ));
+
+        assert_eq!(
+            semantic_candidate_disposition(policy.atom_hard_max_bytes, 0, 1, 0, &policy),
+            Ok((
+                SemanticCandidateDispositionV1::Selected,
+                policy.atom_hard_max_bytes
+            ))
+        );
+        assert_eq!(
+            semantic_candidate_disposition(policy.atom_hard_max_bytes + 1, 0, 1, 7, &policy),
+            Ok((SemanticCandidateDispositionV1::SkippedAtomHardLimit, 7))
+        );
+        assert_eq!(
+            semantic_candidate_disposition(1, 1, 1, 7, &policy),
+            Ok((SemanticCandidateDispositionV1::SkippedCountBudget, 7))
+        );
+        assert_eq!(
+            semantic_candidate_disposition(1, 0, 1, policy.semantic_body_budget_bytes - 1, &policy,),
+            Ok((
+                SemanticCandidateDispositionV1::Selected,
+                policy.semantic_body_budget_bytes
+            ))
+        );
+        assert_eq!(
+            semantic_candidate_disposition(1, 0, 1, policy.semantic_body_budget_bytes, &policy,),
+            Ok((
+                SemanticCandidateDispositionV1::SkippedByteBudget,
+                policy.semantic_body_budget_bytes
+            ))
+        );
+        assert!(matches!(
+            semantic_candidate_disposition(1, 0, 1, u64::MAX, &policy),
+            Err(MemoryError::CanonicalEncoding(_))
+        ));
+
+        assert!(validate_episodic_budget(policy.episodic_pin_budget_bytes - 1, &policy).is_ok());
+        assert!(validate_episodic_budget(policy.episodic_pin_budget_bytes, &policy).is_ok());
+        assert!(matches!(
+            validate_episodic_budget(policy.episodic_pin_budget_bytes + 1, &policy),
+            Err(MemoryError::EpisodicBudgetExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn retention_permissions_independently_gate_semantic_and_exact_paths() -> crate::Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let transient = plan_retirement(
+            &snapshot_with_permission(RetentionPermissionV1::TransientOnly)?,
+            &policy,
+            Seed32::new([11; 32]),
+        )?;
+        assert!(transient.semantic_atoms.is_empty());
+        assert!(transient.semantic_decisions.is_empty());
+        assert_eq!(transient.episodic_population_count, 0);
+        assert!(transient.episodic_winners.is_empty());
+        assert_ne!(transient.digest()?, Digest32::ZERO);
+        assert_ne!(transient.decision_digest()?, Digest32::ZERO);
+
+        let semantic_only = plan_retirement(
+            &snapshot_with_permission(RetentionPermissionV1::SemanticAllowed)?,
+            &policy,
+            Seed32::new([12; 32]),
+        )?;
+        assert_eq!(semantic_only.semantic_atoms.len(), 1);
+        assert_eq!(semantic_only.episodic_population_count, 0);
+        assert!(semantic_only.episodic_winners.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn outcome_similarity_requires_the_same_nonempty_class() {
+        let policy = PolicyV1::poc_v1();
+        let mut left = body(1, "left", RetentionPermissionV1::SemanticAllowed);
+        let mut right = body(2, "right", RetentionPermissionV1::SemanticAllowed);
+        left.topic_keys.clear();
+        right.topic_keys.clear();
+        left.entity_ids.clear();
+        right.entity_ids.clear();
+
+        left.outcome_class = Some("success".to_owned());
+        right.outcome_class = Some("success".to_owned());
+        assert_eq!(
+            semantic_similarity(&left, &right, &policy),
+            policy.similarity_outcome_weight
+        );
+
+        right.outcome_class = Some("failure".to_owned());
+        assert_eq!(semantic_similarity(&left, &right, &policy), Ppm::ZERO);
+
+        left.outcome_class = Some(String::new());
+        right.outcome_class = Some(String::new());
+        assert_eq!(semantic_similarity(&left, &right, &policy), Ppm::ZERO);
+    }
+
+    #[test]
+    fn consolidation_score_binds_every_weight_and_distinct_pair_cohesion() -> crate::Result<()> {
+        let policy = PolicyV1::poc_v1();
+        let mut candidates = (0_u64..3)
+            .map(|index| {
+                candidate(
+                    index,
+                    &format!("session-{index}"),
+                    RetentionPermissionV1::SemanticAllowed,
+                )
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
+        for candidate in &mut candidates {
+            candidate.state.feedback_positive = 0;
+            candidate.state.feedback_negative = 0;
+            let body = candidate
+                .body
+                .as_mut()
+                .ok_or(MemoryError::AtomDigestMismatch {
+                    atom_id: candidate.atom_id,
+                })?;
+            body.formation_signals.salience = Ppm::from_raw_unchecked(400_000);
+            body.formation_signals.novelty = Ppm::from_raw_unchecked(300_000);
+            body.formation_signals.uncertainty = Ppm::from_raw_unchecked(200_000);
+        }
+        let refs = candidates.iter().collect::<Vec<_>>();
+        let score = consolidation_score(&refs, &[0, 1, 2], &policy);
+        assert_eq!(score.support, Ppm::from_raw_unchecked(300_000));
+        assert_eq!(score.diversity, Ppm::ONE);
+        assert_eq!(score.utility, Ppm::from_raw_unchecked(500_000));
+        assert_eq!(score.salience, Ppm::from_raw_unchecked(400_000));
+        assert_eq!(score.cohesion, Ppm::ONE);
+        assert_eq!(score.novelty, Ppm::from_raw_unchecked(300_000));
+        assert_eq!(score.uncertainty, Ppm::from_raw_unchecked(200_000));
+        assert_eq!(score.total, Ppm::from_raw_unchecked(535_000));
+
+        let only = candidates
+            .first_mut()
+            .ok_or(MemoryError::EmptyRetirementCohort)?;
+        let only_body = only.body.as_mut().ok_or(MemoryError::AtomDigestMismatch {
+            atom_id: only.atom_id,
+        })?;
+        only_body.topic_keys.clear();
+        only_body.entity_ids.clear();
+        only_body.outcome_class = None;
+        let refs = candidates.iter().collect::<Vec<_>>();
+        assert_eq!(consolidation_score(&refs, &[0], &policy).cohesion, Ppm::ONE);
+        Ok(())
+    }
+
+    #[test]
+    fn consensus_helpers_enforce_thresholds_filter_empty_values_and_choose_the_requested_map() {
+        let policy = PolicyV1::poc_v1();
+        assert_eq!(consensus_required(1, &policy), 1);
+        assert_eq!(consensus_required(4, &policy), 3);
+
+        let alpha = "alpha".to_owned();
+        let beta = "beta".to_owned();
+        let empty = String::new();
+        let values = [&alpha, &alpha, &beta, &empty];
+        assert_eq!(
+            consensus_optional(values.into_iter(), 2),
+            Some(alpha.clone())
+        );
+        assert_eq!(consensus_optional([&beta, &empty].into_iter(), 2), None);
+        assert_eq!(
+            consensus_strings(values.into_iter(), 2),
+            vec![alpha.clone()]
+        );
+        assert_eq!(
+            consensus_set(values.into_iter(), 2),
+            BTreeSet::from([alpha.clone()])
+        );
+
+        let mut bodies = [
+            body(10, "one", RetentionPermissionV1::SemanticAllowed),
+            body(11, "two", RetentionPermissionV1::SemanticAllowed),
+            body(12, "three", RetentionPermissionV1::SemanticAllowed),
+        ];
+        bodies[2].internal_state_before =
+            BTreeMap::from([("phase".to_owned(), "different".to_owned())]);
+        bodies[2].internal_state_after = BTreeMap::from([("phase".to_owned(), "other".to_owned())]);
+        let refs = bodies.iter().collect::<Vec<_>>();
+        assert_eq!(
+            consensus_map(&refs, 2, false),
+            BTreeMap::from([("phase".to_owned(), "open".to_owned())])
+        );
+        assert_eq!(
+            consensus_map(&refs, 2, true),
+            BTreeMap::from([("phase".to_owned(), "closed".to_owned())])
+        );
+    }
+
+    #[test]
+    fn lottery_sampling_is_bounded_deterministic_and_does_not_consume_trivial_bounds() {
+        assert!(partial_fisher_yates(0, 1, [1; 32]).is_empty());
+
+        let seeds_choose_nonzero = (0_u8..=32).any(|byte| {
+            partial_fisher_yates(16, 1, [byte; 32])
+                .first()
+                .is_some_and(|position| *position != 0)
+        });
+        assert!(seeds_choose_nonzero);
+
+        let mut permutation = partial_fisher_yates(8, 12, [9; 32]);
+        assert_eq!(permutation.len(), 8);
+        permutation.sort_unstable();
+        assert_eq!(permutation, (0..8).collect::<Vec<_>>());
+        assert_eq!(
+            partial_fisher_yates(12, 5, [17; 32]),
+            partial_fisher_yates(12, 5, [17; 32])
+        );
+
+        let mut trivial = ChaCha20Rng::from_seed([23; 32]);
+        assert_eq!(uniform_below(&mut trivial, 0), 0);
+        assert_eq!(uniform_below(&mut trivial, 1), 0);
+        let after_trivial = trivial.next_u64();
+        let mut untouched = ChaCha20Rng::from_seed([23; 32]);
+        assert_eq!(after_trivial, untouched.next_u64());
+
+        let samples = (0_u8..=32)
+            .map(|byte| {
+                let mut rng = ChaCha20Rng::from_seed([byte; 32]);
+                uniform_below(&mut rng, 10)
+            })
+            .collect::<Vec<_>>();
+        assert!(samples.iter().all(|sample| *sample < 10));
+        assert!(samples.iter().any(|sample| *sample != 0));
+
+        let acceptance_floor = 10_u64.wrapping_neg() % 10;
+        let mut exercised_low_accepted_draw = false;
+        for byte in 0_u8..=u8::MAX {
+            let seed = [byte; 32];
+            let mut reference = ChaCha20Rng::from_seed(seed);
+            let first_draw = reference.next_u64();
+            let second_draw = reference.next_u64();
+            if (acceptance_floor..u64::MAX / 10).contains(&first_draw) {
+                let mut observed_rng = ChaCha20Rng::from_seed(seed);
+                assert_eq!(uniform_below(&mut observed_rng, 10), first_draw % 10);
+                assert_eq!(observed_rng.next_u64(), second_draw);
+                exercised_low_accepted_draw = true;
+                break;
+            }
+        }
+        assert!(exercised_low_accepted_draw);
+    }
+
+    #[test]
+    fn uniform_sampling_rejects_a_below_threshold_draw_before_accepting_the_next() {
+        let bound = (1_u64 << 63) + 1;
+        let rejection_threshold = bound.wrapping_neg() % bound;
+        let mut exercised_rejection = false;
+
+        for byte in 0_u8..=u8::MAX {
+            let seed = [byte; 32];
+            let mut reference = ChaCha20Rng::from_seed(seed);
+            let first_draw = reference.next_u64();
+            let second_draw = reference.next_u64();
+            let third_draw = reference.next_u64();
+            if first_draw < rejection_threshold && second_draw >= rejection_threshold {
+                let mut observed_rng = ChaCha20Rng::from_seed(seed);
+                assert_eq!(uniform_below(&mut observed_rng, bound), second_draw % bound);
+                assert_eq!(observed_rng.next_u64(), third_draw);
+                exercised_rejection = true;
+                break;
+            }
+        }
+
+        assert!(exercised_rejection);
     }
 }
