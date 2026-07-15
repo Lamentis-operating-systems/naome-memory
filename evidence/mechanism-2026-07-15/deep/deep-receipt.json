@@ -1,0 +1,83 @@
+{
+  "contract_version": "lab-proof-receipt-v1",
+  "profile": "deep",
+  "dataset_id": "holdout-v1",
+  "policy_digest": "a231e10243fedf95e6d15e278186a53a3ea7f8392e8d4694886e7d6cffbcaede",
+  "dataset_manifest_digest": "993d695488c03252d80d2baff0e1438714dd86b4bf30a4d9713c0ef09d8488e6",
+  "generator_source_digest": "cb3637e88f6c09fe918998737baeeda52de8a55bf226b397bbb9554bee385fca",
+  "world_count": 100,
+  "invariant_statuses": {
+    "apply_atomic_and_idempotent": "verified",
+    "budgets_respected": "verified",
+    "deterministic_replay": "verified",
+    "episode_generality_preserved": "verified",
+    "episodic_exactness": "verified",
+    "golden_four_fates": "verified",
+    "memory_space_isolation": "verified",
+    "receipt_closure": "verified",
+    "sealed_atom_immutability": "verified",
+    "semantic_provenance": "verified",
+    "separate_flashback_channel": "verified",
+    "tamper_fail_closed": "verified"
+  },
+  "hypothesis_statuses": {
+    "episodic_rare_recovery": "supported",
+    "ordinary_utility_preserved": "supported",
+    "semantic_utility": "rejected"
+  },
+  "metrics": {
+    "episodic_rare_recovery": {
+      "estimate_ppm": 100000,
+      "lower_95_ci_ppm": 100000,
+      "threshold_ppm": 80000,
+      "sample_count": 100,
+      "comparator": {
+        "comparison_id": "rare_recall_at_1",
+        "left_model": "semantic_only",
+        "right_model": "hybrid",
+        "shared_budget_bytes_total": 714829,
+        "left_used_bytes_total": 386390,
+        "right_used_bytes_total": 714829,
+        "all_samples_within_shared_budget": true,
+        "selection_rule": "both models share the per-world maximum byte cap; semantic-only exhausts all valid poc-v1 semantic outputs and hybrid adds only the lottery-selected exact package"
+      }
+    },
+    "ordinary_utility_preserved": {
+      "estimate_ppm": 76353,
+      "lower_95_ci_ppm": 54186,
+      "threshold_ppm": -20000,
+      "sample_count": 100,
+      "comparator": {
+        "comparison_id": "ordinary_ndcg_at_10",
+        "left_model": "semantic_only",
+        "right_model": "hybrid",
+        "shared_budget_bytes_total": 714829,
+        "left_used_bytes_total": 386390,
+        "right_used_bytes_total": 714829,
+        "all_samples_within_shared_budget": true,
+        "selection_rule": "both models share the per-world maximum byte cap; semantic-only exhausts all valid poc-v1 semantic outputs and hybrid adds only the lottery-selected exact package"
+      }
+    },
+    "semantic_utility": {
+      "estimate_ppm": 36869,
+      "lower_95_ci_ppm": 36869,
+      "threshold_ppm": 100000,
+      "sample_count": 100,
+      "comparator": {
+        "comparison_id": "semantic_only_vs_recency_only",
+        "left_model": "recency_only",
+        "right_model": "semantic_only",
+        "shared_budget_bytes_total": 3284400,
+        "left_used_bytes_total": 3284400,
+        "right_used_bytes_total": 386390,
+        "all_samples_within_shared_budget": true,
+        "selection_rule": "both models share the per-world maximum byte cap; semantic-only contains every semantic body emitted by poc-v1 and recency-only contains source episodes newest-first"
+      }
+    }
+  },
+  "golden_fate_digest": "5f163c3c8b5811f096a2aa7929f9d6b12a3e8df056576f2cc86a2274047524a3",
+  "crash_campaign_digest": "1b7c6937e32626f7f58f2980c98e0d0233476921f15dbcb0756b8c262894a77f",
+  "decision_ledger_digest": "6e29730c203c48ebf72030280b42c411991d36e2139bb7a19aacf2d89fb84d93",
+  "result_digest": "4e116a085fdca302ef75c08dd5103718c0847dfd61d065c7320cfab4dc51712a",
+  "overall_status": "failed"
+}
