@@ -1,0 +1,357 @@
+{
+  "$schema": "../schemas/dataset-manifest-v1.schema.json",
+  "contract_version": "dataset-manifest-v1",
+  "generator_version": "synthetic-world-v1",
+  "generator_source": {
+    "path": "crates/naome-memory-lab/src/synthetic.rs",
+    "sha256": "cb3637e88f6c09fe918998737baeeda52de8a55bf226b397bbb9554bee385fca"
+  },
+  "synthetic_only": true,
+  "profile_datasets": {
+    "pr": "calibration-v1",
+    "deep": "holdout-v1"
+  },
+  "seed_derivation": {
+    "algorithm": "sha256",
+    "encoding": "domain || u64_be(world_index)",
+    "domains": {
+      "golden-v1": "naome-memory:dataset:golden-v1\u0000",
+      "calibration-v1": "naome-memory:dataset:calibration-v1\u0000",
+      "holdout-v1": "naome-memory:dataset:holdout-v1\u0000",
+      "adversarial-v1": "naome-memory:dataset:adversarial-v1\u0000",
+      "scale-v1": "naome-memory:dataset:scale-v1\u0000"
+    }
+  },
+  "comparator_contract": {
+    "budget_rule": "per-world shared maximum byte cap",
+    "semantic_only_selection": "all semantic bodies emitted by poc-v1",
+    "hybrid_selection": "the same semantic bodies plus only lottery-selected exact packages",
+    "recency_only_selection": "all source episodes ordered newest-first",
+    "used_bytes_reported_separately": true
+  },
+  "datasets": {
+    "golden-v1": {
+      "world_count": 1,
+      "atom_count": 20,
+      "world_ids": [
+        "golden-v1/world-0000"
+      ],
+      "golden_seed_scenarios": [
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "0101010101010101010101010101010101010101010101010101010101010101",
+        "0202020202020202020202020202020202020202020202020202020202020202",
+        "0303030303030303030303030303030303030303030303030303030303030303",
+        "0404040404040404040404040404040404040404040404040404040404040404",
+        "0505050505050505050505050505050505050505050505050505050505050505",
+        "0606060606060606060606060606060606060606060606060606060606060606",
+        "0707070707070707070707070707070707070707070707070707070707070707",
+        "0808080808080808080808080808080808080808080808080808080808080808",
+        "0909090909090909090909090909090909090909090909090909090909090909",
+        "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+        "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+        "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+        "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+        "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+      ],
+      "required_fates": [
+        "semantic_source_forgotten",
+        "semantic_source_and_exact",
+        "exact_only",
+        "header_only"
+      ]
+    },
+    "calibration-v1": {
+      "world_count": 40,
+      "atom_count": 10,
+      "world_ids": [
+        "calibration-v1/world-0000",
+        "calibration-v1/world-0001",
+        "calibration-v1/world-0002",
+        "calibration-v1/world-0003",
+        "calibration-v1/world-0004",
+        "calibration-v1/world-0005",
+        "calibration-v1/world-0006",
+        "calibration-v1/world-0007",
+        "calibration-v1/world-0008",
+        "calibration-v1/world-0009",
+        "calibration-v1/world-0010",
+        "calibration-v1/world-0011",
+        "calibration-v1/world-0012",
+        "calibration-v1/world-0013",
+        "calibration-v1/world-0014",
+        "calibration-v1/world-0015",
+        "calibration-v1/world-0016",
+        "calibration-v1/world-0017",
+        "calibration-v1/world-0018",
+        "calibration-v1/world-0019",
+        "calibration-v1/world-0020",
+        "calibration-v1/world-0021",
+        "calibration-v1/world-0022",
+        "calibration-v1/world-0023",
+        "calibration-v1/world-0024",
+        "calibration-v1/world-0025",
+        "calibration-v1/world-0026",
+        "calibration-v1/world-0027",
+        "calibration-v1/world-0028",
+        "calibration-v1/world-0029",
+        "calibration-v1/world-0030",
+        "calibration-v1/world-0031",
+        "calibration-v1/world-0032",
+        "calibration-v1/world-0033",
+        "calibration-v1/world-0034",
+        "calibration-v1/world-0035",
+        "calibration-v1/world-0036",
+        "calibration-v1/world-0037",
+        "calibration-v1/world-0038",
+        "calibration-v1/world-0039"
+      ],
+      "policy_tuning_allowed": true,
+      "query_judgments": {
+        "ordinary": {
+          "query_id": "ordinary-build-proof-v1",
+          "terms": [
+            "build",
+            "proof"
+          ],
+          "topic_keys": [
+            "build-proof"
+          ],
+          "relevant_episode_atom_indices": [
+            0,
+            1,
+            2
+          ],
+          "relevant_semantic_topic_key": "build-proof",
+          "metric": "ndcg_at_10"
+        },
+        "rare": {
+          "query_id_format": "rare-query:{dataset_id}:{world_index:04}:{atom_index:02}",
+          "term_format": "rare:{dataset_id}:{world_index:04}:{atom_index:02}",
+          "relevant_episode_atom_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "metric": "recall_at_1"
+        }
+      }
+    },
+    "holdout-v1": {
+      "world_count": 100,
+      "atom_count": 10,
+      "world_ids": [
+        "holdout-v1/world-0000",
+        "holdout-v1/world-0001",
+        "holdout-v1/world-0002",
+        "holdout-v1/world-0003",
+        "holdout-v1/world-0004",
+        "holdout-v1/world-0005",
+        "holdout-v1/world-0006",
+        "holdout-v1/world-0007",
+        "holdout-v1/world-0008",
+        "holdout-v1/world-0009",
+        "holdout-v1/world-0010",
+        "holdout-v1/world-0011",
+        "holdout-v1/world-0012",
+        "holdout-v1/world-0013",
+        "holdout-v1/world-0014",
+        "holdout-v1/world-0015",
+        "holdout-v1/world-0016",
+        "holdout-v1/world-0017",
+        "holdout-v1/world-0018",
+        "holdout-v1/world-0019",
+        "holdout-v1/world-0020",
+        "holdout-v1/world-0021",
+        "holdout-v1/world-0022",
+        "holdout-v1/world-0023",
+        "holdout-v1/world-0024",
+        "holdout-v1/world-0025",
+        "holdout-v1/world-0026",
+        "holdout-v1/world-0027",
+        "holdout-v1/world-0028",
+        "holdout-v1/world-0029",
+        "holdout-v1/world-0030",
+        "holdout-v1/world-0031",
+        "holdout-v1/world-0032",
+        "holdout-v1/world-0033",
+        "holdout-v1/world-0034",
+        "holdout-v1/world-0035",
+        "holdout-v1/world-0036",
+        "holdout-v1/world-0037",
+        "holdout-v1/world-0038",
+        "holdout-v1/world-0039",
+        "holdout-v1/world-0040",
+        "holdout-v1/world-0041",
+        "holdout-v1/world-0042",
+        "holdout-v1/world-0043",
+        "holdout-v1/world-0044",
+        "holdout-v1/world-0045",
+        "holdout-v1/world-0046",
+        "holdout-v1/world-0047",
+        "holdout-v1/world-0048",
+        "holdout-v1/world-0049",
+        "holdout-v1/world-0050",
+        "holdout-v1/world-0051",
+        "holdout-v1/world-0052",
+        "holdout-v1/world-0053",
+        "holdout-v1/world-0054",
+        "holdout-v1/world-0055",
+        "holdout-v1/world-0056",
+        "holdout-v1/world-0057",
+        "holdout-v1/world-0058",
+        "holdout-v1/world-0059",
+        "holdout-v1/world-0060",
+        "holdout-v1/world-0061",
+        "holdout-v1/world-0062",
+        "holdout-v1/world-0063",
+        "holdout-v1/world-0064",
+        "holdout-v1/world-0065",
+        "holdout-v1/world-0066",
+        "holdout-v1/world-0067",
+        "holdout-v1/world-0068",
+        "holdout-v1/world-0069",
+        "holdout-v1/world-0070",
+        "holdout-v1/world-0071",
+        "holdout-v1/world-0072",
+        "holdout-v1/world-0073",
+        "holdout-v1/world-0074",
+        "holdout-v1/world-0075",
+        "holdout-v1/world-0076",
+        "holdout-v1/world-0077",
+        "holdout-v1/world-0078",
+        "holdout-v1/world-0079",
+        "holdout-v1/world-0080",
+        "holdout-v1/world-0081",
+        "holdout-v1/world-0082",
+        "holdout-v1/world-0083",
+        "holdout-v1/world-0084",
+        "holdout-v1/world-0085",
+        "holdout-v1/world-0086",
+        "holdout-v1/world-0087",
+        "holdout-v1/world-0088",
+        "holdout-v1/world-0089",
+        "holdout-v1/world-0090",
+        "holdout-v1/world-0091",
+        "holdout-v1/world-0092",
+        "holdout-v1/world-0093",
+        "holdout-v1/world-0094",
+        "holdout-v1/world-0095",
+        "holdout-v1/world-0096",
+        "holdout-v1/world-0097",
+        "holdout-v1/world-0098",
+        "holdout-v1/world-0099"
+      ],
+      "policy_tuning_allowed": false,
+      "frozen": true,
+      "query_judgments": {
+        "ordinary": {
+          "query_id": "ordinary-build-proof-v1",
+          "terms": [
+            "build",
+            "proof"
+          ],
+          "topic_keys": [
+            "build-proof"
+          ],
+          "relevant_episode_atom_indices": [
+            0,
+            1,
+            2
+          ],
+          "relevant_semantic_topic_key": "build-proof",
+          "metric": "ndcg_at_10"
+        },
+        "rare": {
+          "query_id_format": "rare-query:{dataset_id}:{world_index:04}:{atom_index:02}",
+          "term_format": "rare:{dataset_id}:{world_index:04}:{atom_index:02}",
+          "relevant_episode_atom_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "metric": "recall_at_1"
+        }
+      }
+    },
+    "adversarial-v1": {
+      "world_count": 24,
+      "atom_count": 10,
+      "world_ids": [
+        "adversarial-v1/world-0000",
+        "adversarial-v1/world-0001",
+        "adversarial-v1/world-0002",
+        "adversarial-v1/world-0003",
+        "adversarial-v1/world-0004",
+        "adversarial-v1/world-0005",
+        "adversarial-v1/world-0006",
+        "adversarial-v1/world-0007",
+        "adversarial-v1/world-0008",
+        "adversarial-v1/world-0009",
+        "adversarial-v1/world-0010",
+        "adversarial-v1/world-0011",
+        "adversarial-v1/world-0012",
+        "adversarial-v1/world-0013",
+        "adversarial-v1/world-0014",
+        "adversarial-v1/world-0015",
+        "adversarial-v1/world-0016",
+        "adversarial-v1/world-0017",
+        "adversarial-v1/world-0018",
+        "adversarial-v1/world-0019",
+        "adversarial-v1/world-0020",
+        "adversarial-v1/world-0021",
+        "adversarial-v1/world-0022",
+        "adversarial-v1/world-0023"
+      ],
+      "cases": [
+        "memory_space_mix",
+        "repository_scope_leak",
+        "atom_digest_tamper",
+        "artifact_digest_tamper",
+        "policy_digest_tamper",
+        "seed_tamper",
+        "decision_tamper",
+        "receipt_closure_missing",
+        "oversize_atom",
+        "oversize_artifact",
+        "lottery_pin_budget_overflow",
+        "contradictory_sources",
+        "stale_plan",
+        "incomplete_event_sequence"
+      ]
+    },
+    "scale-v1": {
+      "pr_atom_count": 5000,
+      "deep_atom_count": 100000,
+      "body_size_bytes": {
+        "p50": 16384,
+        "p95": 65536,
+        "maximum": 262144
+      },
+      "deep_envelope": {
+        "maximum_wall_seconds": 1800,
+        "maximum_rss_bytes": 6442450944,
+        "maximum_disk_bytes": 10737418240
+      }
+    }
+  },
+  "empirical_thresholds_ppm": {
+    "semantic_utility_ndcg_delta_lower_95_ci": 100000,
+    "episodic_rare_recovery_delta_lower_95_ci": 80000,
+    "ordinary_utility_preserved_delta_lower_95_ci": -20000
+  }
+}

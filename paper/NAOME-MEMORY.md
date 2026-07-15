@@ -3,7 +3,8 @@
 **A design, falsification, and preregistration blueprint for a local-first memory substrate**
 
 - Version: research draft 1, 2026-07-15
-- Implementation snapshot: `646b942501d7a56b53f9e6ce753f7f51ae33b851`
+- Implemented PoC code snapshot: `646b942501d7a56b53f9e6ce753f7f51ae33b851`
+- Evidence execution source commit: `8459c128c177a0939b1c4bf8ad9d94ee8335ad60`
 - Authors: NAOME Project contributors
 - Status: architecture proposal and preregistration blueprint; not a registered
   report or positive-results paper
@@ -98,9 +99,12 @@ receipts, and causal measurement against closure-verified software outcomes.
 
 This document uses five labels:
 
-- **Implemented** means present in the repository snapshot named above.
-- **Measured** means produced by a committed experiment at that snapshot. It
-  does not imply that the experiment measures the final product claim.
+- **Implemented** means present in the PoC code snapshot named above.
+- **Measured** means the experiment outputs are committed with recorded source,
+  commands, toolchain, host, hashes, and verifier results. Whether an individual
+  receipt cryptographically binds the complete source tree is stated
+  separately. Measurement does not imply that the experiment measures the
+  final product claim.
 - **Specified** means this paper defines a required contract for a future
   Engineering Memory version.
 - **Hypothesis** means a falsifiable empirical claim whose threshold and
@@ -127,8 +131,8 @@ itself establish system utility.
 | --- | --- | --- | --- |
 | M1 | Sealed PoC atoms are content-addressed and immutable under the declared verifier. | Implemented; mechanism claim | Canonical fixtures, tamper tests, receipt replay |
 | M2 | PoC retirement and exact episodic retention are deterministic for equal inputs, policy, time, and seed. | Implemented; mechanism claim | Differential tests and replay |
-| M3 | The PoC has exercised a 100,000-atom synthetic scale envelope. | Measured; workload-specific | Bound scale receipt and host profile |
-| E1 | The frozen PoC holdout supports exact rare retrieval and ordinary retrieval preservation under its own fixture. | Measured but narrow | Existing `holdout-v1` receipt |
+| M3 | The PoC has exercised a 100,000-atom synthetic scale envelope. | Measured; workload-specific | Committed source-bound scale receipt and host profile |
+| E1 | The frozen PoC holdout supports exact rare retrieval and ordinary retrieval preservation under its own fixture. | Measured but narrow | Committed `holdout-v1` receipt and decision ledger |
 | E2 | The PoC semantic-only ranker exceeds recency by at least 0.10 NDCG@10. | Rejected | Existing lower bound is 0.036869 |
 | A1 | Existing PoC retrieval results demonstrate better autonomous software engineering. | Rejected interpretation | Requires final task-outcome experiment, which does not exist |
 | H1 | Engineering Memory improves final task success by a practically meaningful margin over fixed exact structured search. | Open primary hypothesis | Preregistered temporal Rust/NSIT benchmark |
@@ -2407,7 +2411,8 @@ The current repository is a substantial mechanism PoC. It contains:
 - independent slow reference paths for key decision and verification logic;
 - tamper, crash, property, differential, fuzz, mutation, schema, and scale
   machinery; and
-- a measured 100,000-atom synthetic envelope.
+- a measured 100,000-atom synthetic envelope, recorded in the committed
+  [mechanism evidence bundle](../evidence/mechanism-2026-07-15/MANIFEST.md).
 
 This is useful infrastructure. It demonstrates that selective and exact
 retention can be made deterministic, auditable, and crash-conscious on a local
@@ -2415,7 +2420,9 @@ machine. It does not yet show that the selected content helps a kernel task.
 
 ### 13.2 Frozen holdout result
 
-The existing 100-world holdout reports lower 95% paired-bootstrap bounds.
+The committed
+[deep receipt](../evidence/mechanism-2026-07-15/deep/deep-receipt.json) for the
+existing 100-world holdout reports lower 95% paired-bootstrap bounds.
 Scores use parts per million (ppm), where 1,000,000 ppm equals 1.0:
 
 | Hypothesis | Lower bound | Required | Existing verdict |
@@ -2480,6 +2487,36 @@ into a kernel-efficacy benchmark.
 | Retrieval/feedback counters | Exposure and downstream use receipt | Bind submitted model-interface bytes and target outcome |
 | Seven-day STM and daily LTM budgets | Per-space logical and host physical ledgers with lifetime bounds | Add deployable quota policy |
 | Synthetic retrieval holdout | Temporal Rust/NSIT task benchmark | New corpus, baselines, oracles and preregistration |
+
+### 13.5 Committed evidence manifest
+
+The
+[2026-07-15 mechanism evidence manifest](../evidence/mechanism-2026-07-15/MANIFEST.md)
+records the clean execution source commit, exact commands, Rust and Cargo
+versions, host, exit semantics, SHA-256 hashes, and verifier outcomes for the
+six raw artifacts committed with this paper.
+
+The 100,000-atom scale run passed its declared workload-specific envelope on
+macOS arm64: 494,575 ms observed wall time, 2,452,963,328 bytes sampled peak
+RSS, and 4,279,762,944 bytes in the persisted temporary directory. Its scale
+receipt directly binds source commit
+`8459c128c177a0939b1c4bf8ad9d94ee8335ad60` and reports successful plan
+replay, receipt verification, and idempotent apply. The 50 ms RSS sampler is an
+observational measurement and can miss shorter peaks.
+
+The deep experiment is also committed and replayed twice with 13 fresh
+child-process crash scenarios per replay. Its `overall_status` is `failed`
+because `semantic_utility` is rejected; all declared mechanism invariants are
+`verified`. This is a valid negative scientific result, not an invalid receipt.
+
+One closure limitation remains explicit: `lab-proof-receipt-v1` does not carry
+a full Git source-commit field. It binds the policy, dataset manifest, synthetic
+generator source, decision ledger, and crash evidence through declared
+digests. The manifest records the clean source commit from which the command
+was executed, and Git commits the resulting bytes, but that external statement
+is not cryptographic full-tree source closure inside the deep receipt. A future
+release-grade experiment must add that binding to the receipt schema and
+verifier.
 
 ## 14. Implementation and research roadmap
 

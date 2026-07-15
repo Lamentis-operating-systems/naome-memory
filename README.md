@@ -94,6 +94,7 @@ The normative PoC contracts are versioned with the code:
 - [`Storage model`](docs/storage.md)
 - [`Release process`](docs/release.md)
 - [`Non-claims`](docs/non-claims.md)
+- [`2026-07-15 mechanism evidence bundle`](evidence/mechanism-2026-07-15/MANIFEST.md)
 
 A digest proves reproducibility and closure over declared inputs; it does not prove the semantic theory. Current evidence is produced by the test and lab commands. This README intentionally makes no claim that release thresholds have already passed.
 
