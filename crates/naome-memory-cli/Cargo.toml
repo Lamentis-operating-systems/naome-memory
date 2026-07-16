@@ -22,7 +22,7 @@ naome-memory-sqlite = { path = "../naome-memory-sqlite", version = "=0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-toml = "0.9.11"
+toml = "1.1.3"
 
 [dev-dependencies]
 tempfile.workspace = true
